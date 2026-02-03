@@ -418,9 +418,14 @@ io.on("connection", (socket) => {
           selectedTiles: Tile[];
           requiredTotal: number;
         }> = [];
+        const extendCandidates: Array<{
+          target: Word;
+          owner: Player;
+          selectedTiles: Tile[];
+          requiredTotal: number;
+        }> = [];
 
         for (const owner of game.players) {
-          if (owner.id === player.id) continue;
           for (const target of owner.words) {
             const targetCounts = countLetters(target.text);
             let isSubset = true;
@@ -447,17 +452,24 @@ io.on("connection", (socket) => {
             const selectedTiles = selectTilesForCounts(required, game.centerTiles);
             if (!selectedTiles) continue;
 
-            stealCandidates.push({
+            const candidate = {
               target,
               owner,
               selectedTiles,
               requiredTotal
-            });
+            };
+            if (owner.id === player.id) {
+              extendCandidates.push(candidate);
+            } else {
+              stealCandidates.push(candidate);
+            }
           }
         }
 
         let selectedTiles: Tile[] | null = null;
         let combinedTileIds: string[] = [];
+        let replacedWordOwner: Player | null = null;
+        let replacedWordId: string | null = null;
 
         if (stealCandidates.length > 0) {
           stealCandidates.sort((a, b) => {
@@ -474,8 +486,25 @@ io.on("connection", (socket) => {
           selectedTiles = chosen.selectedTiles;
           combinedTileIds = [...chosen.target.tileIds, ...selectedTiles.map((tile) => tile.id)];
 
-          chosen.owner.words = chosen.owner.words.filter((entry) => entry.id !== chosen.target.id);
-          updateScores(game);
+          replacedWordOwner = chosen.owner;
+          replacedWordId = chosen.target.id;
+        } else if (extendCandidates.length > 0) {
+          extendCandidates.sort((a, b) => {
+            if (a.requiredTotal !== b.requiredTotal) {
+              return a.requiredTotal - b.requiredTotal;
+            }
+            if (a.target.createdAt !== b.target.createdAt) {
+              return a.target.createdAt - b.target.createdAt;
+            }
+            return a.target.text.localeCompare(b.target.text);
+          });
+
+          const chosen = extendCandidates[0];
+          selectedTiles = chosen.selectedTiles;
+          combinedTileIds = [...chosen.target.tileIds, ...selectedTiles.map((tile) => tile.id)];
+
+          replacedWordOwner = chosen.owner;
+          replacedWordId = chosen.target.id;
         } else {
           selectedTiles = selectTilesForWord(normalized, game.centerTiles);
           if (!selectedTiles) {
@@ -492,6 +521,13 @@ io.on("connection", (socket) => {
           ownerId: player.id,
           createdAt: Date.now()
         };
+
+        if (replacedWordOwner && replacedWordId) {
+          replacedWordOwner.words = replacedWordOwner.words.filter(
+            (entry) => entry.id !== replacedWordId
+          );
+          updateScores(game);
+        }
 
         player.words.push(newWord);
         removeTilesFromCenter(game, selectedTiles.map((tile) => tile.id));
