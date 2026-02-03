@@ -18,7 +18,8 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [createName, setCreateName] = useState("");
+  const [createRoomName, setCreateRoomName] = useState("");
+  const [createPlayerName, setCreatePlayerName] = useState("");
   const [createPublic, setCreatePublic] = useState(true);
   const [createMaxPlayers, setCreateMaxPlayers] = useState(8);
 
@@ -80,7 +81,8 @@ export default function App() {
 
   const handleCreate = () => {
     socket.emit("room:create", {
-      name: createName || "New Room",
+      roomName: createRoomName,
+      playerName: createPlayerName,
       isPublic: createPublic,
       maxPlayers: createMaxPlayers
     });
@@ -147,8 +149,20 @@ export default function App() {
           <section className="panel">
             <h2>Create Room</h2>
             <label>
+              Your name
+              <input
+                value={createPlayerName}
+                onChange={(e) => setCreatePlayerName(e.target.value)}
+                placeholder="Player name"
+              />
+            </label>
+            <label>
               Room name
-              <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder="Friday Night" />
+              <input
+                value={createRoomName}
+                onChange={(e) => setCreateRoomName(e.target.value)}
+                placeholder="Friday Night"
+              />
             </label>
             <label className="row">
               <span>Public room</span>

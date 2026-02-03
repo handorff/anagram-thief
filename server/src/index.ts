@@ -69,6 +69,11 @@ function sanitizeName(name: string): string {
   return trimmed.length > 0 ? trimmed.slice(0, 24) : "Player";
 }
 
+function sanitizeRoomName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 36) : "New Room";
+}
+
 function emitError(socket: { emit: Function }, message: string, code?: string) {
   socket.emit("error", { message, code });
 }
@@ -207,41 +212,58 @@ io.on("connection", (socket) => {
     socket.emit("room:list", Array.from(rooms.values()).filter((room) => room.isPublic).map(getRoomSummary));
   });
 
-  socket.on("room:create", ({ name, isPublic, maxPlayers }: { name: string; isPublic: boolean; maxPlayers: number }) => {
-    if (socket.data.roomId) {
-      emitError(socket, "You are already in a room.");
-      return;
-    }
-
-    const roomId = randomUUID();
-    const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
-    const player: Player = {
-      id: socket.id,
-      name: sanitizeName(name),
-      connected: true,
-      words: [],
-      score: 0
-    };
-
-    const room: RoomState & { maxPlayers: number } = {
-      id: roomId,
-      name: name.trim().length ? name.trim() : "New Room",
+  socket.on(
+    "room:create",
+    ({
+      roomName,
+      playerName,
+      name,
       isPublic,
-      code,
-      hostId: socket.id,
-      players: [player],
-      status: "lobby",
-      createdAt: Date.now(),
-      maxPlayers: Math.min(MAX_PLAYERS, Math.max(2, maxPlayers || MAX_PLAYERS))
-    };
+      maxPlayers
+    }: {
+      roomName?: string;
+      playerName?: string;
+      name?: string;
+      isPublic: boolean;
+      maxPlayers: number;
+    }) => {
+      if (socket.data.roomId) {
+        emitError(socket, "You are already in a room.");
+        return;
+      }
 
-    rooms.set(roomId, room);
-    socket.data.roomId = roomId;
-    socket.join(roomId);
+      const resolvedRoomName = typeof roomName === "string" ? roomName : name ?? "";
+      const resolvedPlayerName = typeof playerName === "string" ? playerName : name ?? "";
+      const roomId = randomUUID();
+      const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
+      const player: Player = {
+        id: socket.id,
+        name: sanitizeName(resolvedPlayerName),
+        connected: true,
+        words: [],
+        score: 0
+      };
 
-    emitRoomState(roomId);
-    broadcastRoomList();
-  });
+      const room: RoomState & { maxPlayers: number } = {
+        id: roomId,
+        name: sanitizeRoomName(resolvedRoomName),
+        isPublic,
+        code,
+        hostId: socket.id,
+        players: [player],
+        status: "lobby",
+        createdAt: Date.now(),
+        maxPlayers: Math.min(MAX_PLAYERS, Math.max(2, maxPlayers || MAX_PLAYERS))
+      };
+
+      rooms.set(roomId, room);
+      socket.data.roomId = roomId;
+      socket.join(roomId);
+
+      emitRoomState(roomId);
+      broadcastRoomList();
+    }
+  );
 
   socket.on("room:join", ({ roomId, name, code }: { roomId: string; name: string; code?: string }) => {
     if (socket.data.roomId) {
