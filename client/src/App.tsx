@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import type { GameState, Player, RoomState, RoomSummary } from "@shared/types";
 
@@ -27,6 +27,7 @@ export default function App() {
   const [joinCode, setJoinCode] = useState("");
 
   const [claimWord, setClaimWord] = useState("");
+  const claimInputRef = useRef<HTMLInputElement>(null);
 
   const [now, setNow] = useState(Date.now());
 
@@ -101,6 +102,7 @@ export default function App() {
   const handleFlip = () => {
     if (!roomState) return;
     socket.emit("game:flip", { roomId: roomState.id });
+    requestAnimationFrame(() => claimInputRef.current?.focus());
   };
 
   const handleClaim = () => {
@@ -111,7 +113,14 @@ export default function App() {
       word: claimWord
     });
     setClaimWord("");
+    requestAnimationFrame(() => claimInputRef.current?.focus());
   };
+
+  useEffect(() => {
+    if (isInGame) {
+      requestAnimationFrame(() => claimInputRef.current?.focus());
+    }
+  }, [isInGame, gameState?.centerTiles.length, gameState?.turnPlayerId]);
 
   return (
     <div className="page">
@@ -274,8 +283,15 @@ export default function App() {
               </div>
               <div className="claim-input">
                 <input
+                  ref={claimInputRef}
                   value={claimWord}
                   onChange={(e) => setClaimWord(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      handleClaim();
+                    }
+                  }}
                   placeholder="Enter word"
                 />
                 <button onClick={handleClaim} disabled={!claimWord.trim()}>
