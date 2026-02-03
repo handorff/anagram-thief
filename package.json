@@ -1,0 +1,16 @@
+{
+  "name": "anagram-thief",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev --workspace server\" \"npm:dev --workspace client\"",
+    "build": "npm run build --workspace shared && npm run build --workspace server && npm run build --workspace client"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
