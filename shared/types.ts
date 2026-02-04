@@ -1,5 +1,10 @@
 export type RoomStatus = "lobby" | "in-game" | "ended";
 
+export interface FlipTimerSettings {
+  enabled: boolean;
+  seconds: number;
+}
+
 export interface Tile {
   id: string;
   letter: string;
@@ -39,6 +44,7 @@ export interface RoomState {
   players: Player[];
   status: RoomStatus;
   createdAt: number;
+  flipTimer: FlipTimerSettings;
 }
 
 export interface GameState {

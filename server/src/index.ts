@@ -15,6 +15,9 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3001);
 const END_TIMER_MS = 60_000;
+const DEFAULT_FLIP_TIMER_SECONDS = 15;
+const MIN_FLIP_TIMER_SECONDS = 1;
+const MAX_FLIP_TIMER_SECONDS = 60;
 const MAX_PLAYERS = 8;
 
 const wordListCandidates = [
@@ -58,6 +61,13 @@ type GameStateInternal = {
   lastClaimAt: number | null;
   endTimer?: NodeJS.Timeout;
   endTimerEndsAt?: number;
+  flipTimer: {
+    enabled: boolean;
+    seconds: number;
+  };
+  flipTimerTimeout?: NodeJS.Timeout;
+  flipTimerEndsAt?: number;
+  flipTimerToken?: string;
 };
 
 const rooms = new Map<string, RoomState>();
@@ -72,6 +82,14 @@ function sanitizeName(name: string): string {
 function sanitizeRoomName(name: string): string {
   const trimmed = name.trim();
   return trimmed.length > 0 ? trimmed.slice(0, 36) : "New Room";
+}
+
+function clampFlipTimerSeconds(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_FLIP_TIMER_SECONDS;
+  }
+  const rounded = Math.round(value);
+  return Math.min(MAX_FLIP_TIMER_SECONDS, Math.max(MIN_FLIP_TIMER_SECONDS, rounded));
 }
 
 function emitError(socket: { emit: Function }, message: string, code?: string) {
@@ -169,10 +187,46 @@ function updateScores(game: GameStateInternal) {
   });
 }
 
+function clearFlipTimer(game: GameStateInternal) {
+  if (game.flipTimerTimeout) {
+    clearTimeout(game.flipTimerTimeout);
+    game.flipTimerTimeout = undefined;
+  }
+  game.flipTimerEndsAt = undefined;
+  game.flipTimerToken = undefined;
+}
+
+function scheduleFlipTimer(game: GameStateInternal) {
+  clearFlipTimer(game);
+  if (!game.flipTimer.enabled) return;
+  if (game.status !== "in-game") return;
+  if (game.bag.length === 0) return;
+
+  const token = randomUUID();
+  const turnPlayerId = game.turnPlayerId;
+  const durationMs = game.flipTimer.seconds * 1000;
+  game.flipTimerToken = token;
+  game.flipTimerEndsAt = Date.now() + durationMs;
+
+  game.flipTimerTimeout = setTimeout(() => {
+    enqueue(game.roomId, () => {
+      const current = games.get(game.roomId);
+      if (!current) return;
+      if (current.status !== "in-game") return;
+      if (!current.flipTimer.enabled) return;
+      if (current.flipTimerToken !== token) return;
+      if (current.turnPlayerId !== turnPlayerId) return;
+      if (!performFlip(current)) return;
+      emitGameState(current.roomId);
+    });
+  }, durationMs);
+}
+
 function scheduleEndTimer(game: GameStateInternal) {
   if (game.endTimer) {
     clearTimeout(game.endTimer);
   }
+  clearFlipTimer(game);
   game.endTimerEndsAt = Date.now() + END_TIMER_MS;
   game.endTimer = setTimeout(() => {
     game.status = "ended";
@@ -184,6 +238,21 @@ function scheduleEndTimer(game: GameStateInternal) {
     }
     emitGameState(game.roomId);
   }, END_TIMER_MS);
+}
+
+function performFlip(game: GameStateInternal): boolean {
+  if (game.bag.length === 0) return false;
+  const tile = game.bag.shift();
+  if (!tile) return false;
+  game.centerTiles.push(tile);
+  advanceTurn(game);
+
+  if (game.bag.length === 0) {
+    scheduleEndTimer(game);
+  } else {
+    scheduleFlipTimer(game);
+  }
+  return true;
 }
 
 function advanceTurn(game: GameStateInternal) {
@@ -219,13 +288,17 @@ io.on("connection", (socket) => {
       playerName,
       name,
       isPublic,
-      maxPlayers
+      maxPlayers,
+      flipTimerEnabled,
+      flipTimerSeconds
     }: {
       roomName?: string;
       playerName?: string;
       name?: string;
       isPublic: boolean;
       maxPlayers: number;
+      flipTimerEnabled?: boolean;
+      flipTimerSeconds?: number;
     }) => {
       if (socket.data.roomId) {
         emitError(socket, "You are already in a room.");
@@ -234,6 +307,8 @@ io.on("connection", (socket) => {
 
       const resolvedRoomName = typeof roomName === "string" ? roomName : name ?? "";
       const resolvedPlayerName = typeof playerName === "string" ? playerName : name ?? "";
+      const resolvedFlipTimerEnabled = Boolean(flipTimerEnabled);
+      const resolvedFlipTimerSeconds = clampFlipTimerSeconds(flipTimerSeconds);
       const roomId = randomUUID();
       const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
       const player: Player = {
@@ -253,7 +328,11 @@ io.on("connection", (socket) => {
         players: [player],
         status: "lobby",
         createdAt: Date.now(),
-        maxPlayers: Math.min(MAX_PLAYERS, Math.max(2, maxPlayers || MAX_PLAYERS))
+        maxPlayers: Math.min(MAX_PLAYERS, Math.max(2, maxPlayers || MAX_PLAYERS)),
+        flipTimer: {
+          enabled: resolvedFlipTimerEnabled,
+          seconds: resolvedFlipTimerSeconds
+        }
       };
 
       rooms.set(roomId, room);
@@ -329,6 +408,10 @@ io.on("connection", (socket) => {
     }));
     const turnOrder = players.map((player) => player.id);
     const bag = createTileBag();
+    const flipTimer = room.flipTimer ?? {
+      enabled: false,
+      seconds: DEFAULT_FLIP_TIMER_SECONDS
+    };
 
     const game: GameStateInternal = {
       roomId: room.id,
@@ -339,10 +422,15 @@ io.on("connection", (socket) => {
       turnOrder,
       turnIndex: 0,
       turnPlayerId: turnOrder[0],
-      lastClaimAt: null
+      lastClaimAt: null,
+      flipTimer: {
+        enabled: flipTimer.enabled,
+        seconds: clampFlipTimerSeconds(flipTimer.seconds)
+      }
     };
 
     games.set(roomId, game);
+    scheduleFlipTimer(game);
     emitRoomState(roomId);
     emitGameState(roomId);
     broadcastRoomList();
@@ -363,18 +451,9 @@ io.on("connection", (socket) => {
         emitError(socket, "Not your turn to flip.");
         return;
       }
-      if (game.bag.length === 0) {
+      if (!performFlip(game)) {
         emitError(socket, "No tiles left to flip.");
         return;
-      }
-
-      const tile = game.bag.shift();
-      if (!tile) return;
-      game.centerTiles.push(tile);
-      advanceTurn(game);
-
-      if (game.bag.length === 0) {
-        scheduleEndTimer(game);
       }
 
       emitGameState(roomId);
@@ -561,6 +640,7 @@ io.on("connection", (socket) => {
         gamePlayer.connected = false;
         if (game.turnPlayerId === socket.id) {
           advanceTurn(game);
+          scheduleFlipTimer(game);
         }
       }
       emitGameState(roomId);

@@ -11,6 +11,16 @@ function formatTime(seconds: number) {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+const DEFAULT_FLIP_TIMER_SECONDS = 15;
+const MIN_FLIP_TIMER_SECONDS = 1;
+const MAX_FLIP_TIMER_SECONDS = 60;
+
+function clampFlipTimerSeconds(value: number) {
+  const rounded = Math.round(value);
+  if (Number.isNaN(rounded)) return DEFAULT_FLIP_TIMER_SECONDS;
+  return Math.min(MAX_FLIP_TIMER_SECONDS, Math.max(MIN_FLIP_TIMER_SECONDS, rounded));
+}
+
 export default function App() {
   const [socketId, setSocketId] = useState<string | null>(null);
   const [roomList, setRoomList] = useState<RoomSummary[]>([]);
@@ -26,6 +36,8 @@ export default function App() {
   const [createRoomName, setCreateRoomName] = useState("");
   const [createPublic, setCreatePublic] = useState(true);
   const [createMaxPlayers, setCreateMaxPlayers] = useState(8);
+  const [createFlipTimerEnabled, setCreateFlipTimerEnabled] = useState(false);
+  const [createFlipTimerSeconds, setCreateFlipTimerSeconds] = useState(DEFAULT_FLIP_TIMER_SECONDS);
 
   const [joinCode, setJoinCode] = useState("");
 
@@ -85,11 +97,14 @@ export default function App() {
 
   const handleCreate = () => {
     if (!playerName) return;
+    const flipTimerSeconds = clampFlipTimerSeconds(createFlipTimerSeconds);
     socket.emit("room:create", {
       roomName: createRoomName,
       playerName,
       isPublic: createPublic,
-      maxPlayers: createMaxPlayers
+      maxPlayers: createMaxPlayers,
+      flipTimerEnabled: createFlipTimerEnabled,
+      flipTimerSeconds
     });
   };
 
@@ -287,6 +302,28 @@ export default function App() {
                 onChange={(e) => setCreateMaxPlayers(Number(e.target.value))}
               />
             </label>
+            <label className="row">
+              <span>Flip timer</span>
+              <input
+                type="checkbox"
+                checked={createFlipTimerEnabled}
+                onChange={(e) => setCreateFlipTimerEnabled(e.target.checked)}
+              />
+            </label>
+            <label>
+              Flip timer seconds (1-60)
+              <input
+                type="number"
+                min={MIN_FLIP_TIMER_SECONDS}
+                max={MAX_FLIP_TIMER_SECONDS}
+                value={createFlipTimerSeconds}
+                onChange={(e) => setCreateFlipTimerSeconds(Number(e.target.value))}
+                onBlur={() =>
+                  setCreateFlipTimerSeconds((current) => clampFlipTimerSeconds(current))
+                }
+                disabled={!createFlipTimerEnabled}
+              />
+            </label>
             <div className="button-row">
               <button className="button-secondary" onClick={() => setLobbyView("list")}>
                 Back to games
@@ -312,6 +349,9 @@ export default function App() {
           <section className="panel">
             <h2>Lobby</h2>
             <p className="muted">Room ID: {roomState.id}</p>
+            <p className="muted">
+              Flip timer: {roomState.flipTimer.enabled ? `${roomState.flipTimer.seconds}s` : "off"}
+            </p>
             {!roomState.isPublic && roomState.code && <p className="muted">Code: {roomState.code}</p>}
             <div className="player-list">
               {currentPlayers.map((player) => (
@@ -344,6 +384,9 @@ export default function App() {
               <div>
                 <h2>Center Tiles</h2>
                 <p className="muted">Bag: {gameState.bagCount} tiles</p>
+                {roomState?.flipTimer.enabled && (
+                  <p className="muted">Auto flip: {roomState.flipTimer.seconds}s</p>
+                )}
               </div>
               <div className="turn">
                 <span>Turn:</span>
