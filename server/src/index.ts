@@ -540,6 +540,9 @@ io.on("connection", (socket) => {
             if (owner.id === player.id) {
               extendCandidates.push(candidate);
             } else {
+              if (normalized.includes(target.text)) {
+                continue;
+              }
               stealCandidates.push(candidate);
             }
           }

@@ -338,6 +338,7 @@ export default function App() {
               <li>Flip one tile on your turn.</li>
               <li>Claim words any time using center tiles.</li>
               <li>Steals are automatic when possible.</li>
+              <li>Steals must rearrange letters (no substring extensions).</li>
               <li>Game ends 60s after bag is empty.</li>
             </ul>
           </section>
@@ -371,6 +372,7 @@ export default function App() {
               <li>Flip one tile on your turn.</li>
               <li>Claim words any time using center tiles.</li>
               <li>Steals are automatic when possible.</li>
+              <li>Steals must rearrange letters (no substring extensions).</li>
               <li>Game ends 60s after bag is empty.</li>
             </ul>
           </section>
