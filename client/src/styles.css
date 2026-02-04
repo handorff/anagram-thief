@@ -38,6 +38,32 @@ h1, h2, h3 {
   gap: 2rem;
 }
 
+.name-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+}
+
+.name-card {
+  width: min(520px, 92vw);
+  padding: 2.5rem;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 24px;
+  backdrop-filter: blur(10px);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.name-input {
+  font-size: 2rem;
+  padding: 0.9rem 1.1rem;
+  text-align: center;
+}
+
 .header {
   display: flex;
   justify-content: space-between;
@@ -144,6 +170,18 @@ button {
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.button-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.button-secondary {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: var(--text);
 }
 
 .room-list {
@@ -325,6 +363,20 @@ button:disabled {
   font-size: 1rem;
   border-radius: 10px;
   box-shadow: 0 5px 12px rgba(15, 23, 42, 0.35);
+}
+
+.join-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.75);
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  z-index: 20;
+}
+
+.join-modal {
+  width: min(420px, 92vw);
 }
 
 @media (max-width: 960px) {

@@ -90,7 +90,7 @@ function getRoomSummary(room: RoomState): RoomSummary {
 }
 
 function broadcastRoomList() {
-  const summaries = Array.from(rooms.values()).filter((room) => room.isPublic).map(getRoomSummary);
+  const summaries = Array.from(rooms.values()).map(getRoomSummary);
   io.emit("room:list", summaries);
 }
 
@@ -209,7 +209,7 @@ function removeTilesFromCenter(game: GameStateInternal, tileIds: string[]) {
 
 io.on("connection", (socket) => {
   socket.on("room:list", () => {
-    socket.emit("room:list", Array.from(rooms.values()).filter((room) => room.isPublic).map(getRoomSummary));
+    socket.emit("room:list", Array.from(rooms.values()).map(getRoomSummary));
   });
 
   socket.on(

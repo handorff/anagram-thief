@@ -18,13 +18,15 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [playerName, setPlayerName] = useState("");
+  const [nameDraft, setNameDraft] = useState("");
+  const [lobbyView, setLobbyView] = useState<"list" | "create">("list");
+  const [joinPrompt, setJoinPrompt] = useState<{ roomId: string; roomName: string } | null>(null);
+
   const [createRoomName, setCreateRoomName] = useState("");
-  const [createPlayerName, setCreatePlayerName] = useState("");
   const [createPublic, setCreatePublic] = useState(true);
   const [createMaxPlayers, setCreateMaxPlayers] = useState(8);
 
-  const [joinName, setJoinName] = useState("");
-  const [joinRoomId, setJoinRoomId] = useState("");
   const [joinCode, setJoinCode] = useState("");
 
   const [claimWord, setClaimWord] = useState("");
@@ -70,6 +72,8 @@ export default function App() {
     return [];
   }, [gameState, roomState]);
 
+  const lobbyRooms = useMemo(() => roomList.filter((room) => room.status === "lobby"), [roomList]);
+
   const endTimerRemaining = useMemo(() => {
     if (!gameState?.endTimerEndsAt) return null;
     const remaining = Math.max(0, Math.ceil((gameState.endTimerEndsAt - now) / 1000));
@@ -80,18 +84,35 @@ export default function App() {
   const isInGame = roomState?.status === "in-game" && gameState;
 
   const handleCreate = () => {
+    if (!playerName) return;
     socket.emit("room:create", {
       roomName: createRoomName,
-      playerName: createPlayerName,
+      playerName,
       isPublic: createPublic,
       maxPlayers: createMaxPlayers
     });
   };
 
-  const handleJoin = () => {
+  const handleJoinRoom = (room: RoomSummary) => {
+    if (!playerName) return;
+    if (room.status !== "lobby") return;
+    if (room.playerCount >= room.maxPlayers) return;
+    if (room.isPublic) {
+      socket.emit("room:join", {
+        roomId: room.id,
+        name: playerName
+      });
+      return;
+    }
+    setJoinCode("");
+    setJoinPrompt({ roomId: room.id, roomName: room.name });
+  };
+
+  const handleJoinWithCode = () => {
+    if (!playerName || !joinPrompt) return;
     socket.emit("room:join", {
-      roomId: joinRoomId.trim(),
-      name: joinName || "Player",
+      roomId: joinPrompt.roomId,
+      name: playerName,
       code: joinCode.trim() || undefined
     });
   };
@@ -99,6 +120,11 @@ export default function App() {
   const handleStart = () => {
     if (!roomState) return;
     socket.emit("room:start", { roomId: roomState.id });
+  };
+
+  const handleConfirmName = () => {
+    const trimmed = nameDraft.trim();
+    setPlayerName(trimmed.length > 0 ? trimmed : "Player");
   };
 
   const roomId = roomState?.id ?? null;
@@ -127,6 +153,14 @@ export default function App() {
   }, [isInGame, gameState?.centerTiles.length, gameState?.turnPlayerId]);
 
   useEffect(() => {
+    if (roomState) {
+      setJoinPrompt(null);
+      return;
+    }
+    setLobbyView("list");
+  }, [roomState]);
+
+  useEffect(() => {
     if (!isInGame) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -141,6 +175,33 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleFlip, isInGame, gameState?.turnPlayerId, socketId]);
+
+  if (!playerName) {
+    return (
+      <div className="name-gate">
+        <div className="name-card">
+          <h1>Choose your name</h1>
+          <p className="muted">This is how other players will see you.</p>
+          <input
+            className="name-input"
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && nameDraft.trim()) {
+                e.preventDefault();
+                handleConfirmName();
+              }
+            }}
+            placeholder="Type your name"
+            autoFocus
+          />
+          <button onClick={handleConfirmName} disabled={!nameDraft.trim()}>
+            Enter Lobby
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
@@ -162,18 +223,44 @@ export default function App() {
         </div>
       )}
 
-      {!roomState && (
+      {!roomState && lobbyView === "list" && (
         <div className="grid">
           <section className="panel">
-            <h2>Create Room</h2>
-            <label>
-              Your name
-              <input
-                value={createPlayerName}
-                onChange={(e) => setCreatePlayerName(e.target.value)}
-                placeholder="Player name"
-              />
-            </label>
+            <h2>Open Games</h2>
+            <div className="room-list">
+              {lobbyRooms.length === 0 && <p className="muted">No open games yet.</p>}
+              {lobbyRooms.map((room) => {
+                const isFull = room.playerCount >= room.maxPlayers;
+                return (
+                  <div key={room.id} className="room-card">
+                    <div>
+                      <strong>{room.name}</strong>
+                      <div className="muted">
+                        {room.playerCount} / {room.maxPlayers} • {room.isPublic ? "public" : "private"}
+                      </div>
+                    </div>
+                    <button onClick={() => handleJoinRoom(room)} disabled={isFull}>
+                      {isFull ? "Full" : "Join"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>Start a new game</h2>
+            <p className="muted">Signed in as {playerName}.</p>
+            <button onClick={() => setLobbyView("create")}>Create new game</button>
+          </section>
+        </div>
+      )}
+
+      {!roomState && lobbyView === "create" && (
+        <div className="grid">
+          <section className="panel">
+            <h2>New Game</h2>
+            <p className="muted">Hosting as {playerName}.</p>
             <label>
               Room name
               <input
@@ -200,48 +287,22 @@ export default function App() {
                 onChange={(e) => setCreateMaxPlayers(Number(e.target.value))}
               />
             </label>
-            <button onClick={handleCreate}>Create</button>
-          </section>
-
-          <section className="panel">
-            <h2>Join Room</h2>
-            <label>
-              Your name
-              <input value={joinName} onChange={(e) => setJoinName(e.target.value)} placeholder="Player name" />
-            </label>
-            <label>
-              Room ID
-              <input value={joinRoomId} onChange={(e) => setJoinRoomId(e.target.value)} placeholder="Room ID" />
-            </label>
-            <label>
-              Room code (private)
-              <input value={joinCode} onChange={(e) => setJoinCode(e.target.value)} placeholder="Code" />
-            </label>
-            <button onClick={handleJoin}>Join</button>
-          </section>
-
-          <section className="panel">
-            <h2>Public Rooms</h2>
-            <div className="room-list">
-              {roomList.length === 0 && <p className="muted">No public rooms yet.</p>}
-              {roomList.map((room) => (
-                <div key={room.id} className="room-card">
-                  <div>
-                    <strong>{room.name}</strong>
-                    <div className="muted">
-                      {room.playerCount} / {room.maxPlayers} • {room.status}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setJoinRoomId(room.id);
-                    }}
-                  >
-                    Use ID
-                  </button>
-                </div>
-              ))}
+            <div className="button-row">
+              <button className="button-secondary" onClick={() => setLobbyView("list")}>
+                Back to games
+              </button>
+              <button onClick={handleCreate}>Create game</button>
             </div>
+          </section>
+
+          <section className="panel">
+            <h2>How to Play</h2>
+            <ul>
+              <li>Flip one tile on your turn.</li>
+              <li>Claim words any time using center tiles.</li>
+              <li>Steals are automatic when possible.</li>
+              <li>Game ends 60s after bag is empty.</li>
+            </ul>
           </section>
         </div>
       )}
@@ -371,6 +432,41 @@ export default function App() {
                   <span className="score">{player.score}</span>
                 </div>
               ))}
+          </div>
+        </div>
+      )}
+
+      {joinPrompt && (
+        <div className="join-overlay">
+          <div className="panel join-modal">
+            <h2>Enter room code</h2>
+            <p className="muted">{joinPrompt.roomName} is private.</p>
+            <input
+              type="password"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && joinCode.trim()) {
+                  e.preventDefault();
+                  handleJoinWithCode();
+                }
+              }}
+              placeholder="Room code"
+            />
+            <div className="button-row">
+              <button
+                className="button-secondary"
+                onClick={() => {
+                  setJoinPrompt(null);
+                  setJoinCode("");
+                }}
+              >
+                Cancel
+              </button>
+              <button onClick={handleJoinWithCode} disabled={!joinCode.trim()}>
+                Join game
+              </button>
+            </div>
           </div>
         </div>
       )}
