@@ -301,7 +301,6 @@ button:disabled {
 
 .word-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   padding: 0.25rem 0;
 }
@@ -312,6 +311,20 @@ button:disabled {
   color: var(--text);
   padding: 0.25rem 0.5rem;
   border-radius: 999px;
+}
+
+.word-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.word-tile {
+  width: 34px;
+  height: 34px;
+  font-size: 1rem;
+  border-radius: 10px;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.35);
 }
 
 @media (max-width: 960px) {

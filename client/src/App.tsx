@@ -370,7 +370,13 @@ function WordList({ player }: { player: Player }) {
       {player.words.length === 0 && <div className="muted">No words yet.</div>}
       {player.words.map((word) => (
         <div key={word.id} className="word-item">
-          <span>{word.text}</span>
+          <div className="word-tiles" aria-label={word.text}>
+            {word.text.split("").map((letter, index) => (
+              <div key={`${word.id}-${index}`} className="tile word-tile">
+                {letter.toUpperCase()}
+              </div>
+            ))}
+          </div>
         </div>
       ))}
     </div>
