@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import type { GameState, Player, RoomState, RoomSummary } from "@shared/types";
 
@@ -101,11 +101,13 @@ export default function App() {
     socket.emit("room:start", { roomId: roomState.id });
   };
 
-  const handleFlip = () => {
-    if (!roomState) return;
-    socket.emit("game:flip", { roomId: roomState.id });
+  const roomId = roomState?.id ?? null;
+
+  const handleFlip = useCallback(() => {
+    if (!roomId) return;
+    socket.emit("game:flip", { roomId });
     requestAnimationFrame(() => claimInputRef.current?.focus());
-  };
+  }, [roomId]);
 
   const handleClaim = () => {
     if (!roomState) return;
@@ -123,6 +125,22 @@ export default function App() {
       requestAnimationFrame(() => claimInputRef.current?.focus());
     }
   }, [isInGame, gameState?.centerTiles.length, gameState?.turnPlayerId]);
+
+  useEffect(() => {
+    if (!isInGame) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.repeat) return;
+      const isSpace = event.code === "Space" || event.key === " " || event.key === "Spacebar";
+      if (!isSpace) return;
+      if (gameState?.turnPlayerId !== socketId) return;
+      event.preventDefault();
+      handleFlip();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleFlip, isInGame, gameState?.turnPlayerId, socketId]);
 
   return (
     <div className="page">
