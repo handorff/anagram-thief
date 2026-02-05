@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { Server } from "socket.io";
+import { Server, Socket } from "socket.io";
 import type { GameState, Player, RoomState, RoomSummary, Tile, Word } from "../../shared/types.js";
 import { createTileBag } from "../../shared/tileBag.js";
 import { isValidWord, loadWordSet, normalizeWord } from "../../shared/wordValidation.js";
@@ -99,9 +99,26 @@ type GameStateInternal = {
   claimCooldownTimeouts: Map<string, NodeJS.Timeout>;
 };
 
+type SessionRecord = {
+  sessionId: string;
+  playerId: string;
+  name: string;
+  roomId: string | null;
+  socketId: string | null;
+};
+
+type SocketData = {
+  sessionId?: string;
+  playerId?: string;
+  roomId?: string;
+};
+
 const rooms = new Map<string, RoomState>();
 const games = new Map<string, GameStateInternal>();
 const roomQueues = new Map<string, Promise<void>>();
+const sessionsById = new Map<string, SessionRecord>();
+const sessionsByPlayerId = new Map<string, SessionRecord>();
+const socketToSessionId = new Map<string, string>();
 
 function sanitizeName(name: string): string {
   const trimmed = name.trim();
@@ -131,6 +148,65 @@ function clampClaimTimerSeconds(value: unknown): number {
 
 function emitError(socket: { emit: Function }, message: string, code?: string) {
   socket.emit("error", { message, code });
+}
+
+function getSocketData(socket: Socket): SocketData {
+  return socket.data as SocketData;
+}
+
+function normalizeSessionId(value: unknown): string {
+  if (typeof value !== "string") return randomUUID();
+  const trimmed = value.trim();
+  if (!trimmed) return randomUUID();
+  return trimmed.slice(0, 128);
+}
+
+function emitSessionSelf(socket: Socket, session: SessionRecord) {
+  socket.emit("session:self", {
+    playerId: session.playerId,
+    name: session.name,
+    roomId: session.roomId
+  });
+}
+
+function getSessionBySocket(socket: Socket): SessionRecord | null {
+  const data = getSocketData(socket);
+  const sessionId = data.sessionId ?? socketToSessionId.get(socket.id);
+  if (!sessionId) return null;
+  return sessionsById.get(sessionId) ?? null;
+}
+
+function getActiveSocketForPlayer(playerId: string): Socket | null {
+  const session = sessionsByPlayerId.get(playerId);
+  if (!session?.socketId) return null;
+  return io.sockets.sockets.get(session.socketId) ?? null;
+}
+
+function setSessionRoom(session: SessionRecord, roomId: string | null) {
+  session.roomId = roomId;
+  if (!session.socketId) return;
+  const socket = io.sockets.sockets.get(session.socketId);
+  if (!socket) return;
+  const socketData = getSocketData(socket);
+  socketData.roomId = roomId ?? undefined;
+}
+
+function bindSocketToSession(socket: Socket, session: SessionRecord) {
+  const previousSocketId = session.socketId;
+  session.socketId = socket.id;
+  socketToSessionId.set(socket.id, session.sessionId);
+
+  const data = getSocketData(socket);
+  data.sessionId = session.sessionId;
+  data.playerId = session.playerId;
+  data.roomId = session.roomId ?? undefined;
+
+  if (previousSocketId && previousSocketId !== socket.id) {
+    const previousSocket = io.sockets.sockets.get(previousSocketId);
+    if (previousSocket) {
+      previousSocket.disconnect(true);
+    }
+  }
 }
 
 function getRoomSummary(room: RoomState): RoomSummary {
@@ -272,7 +348,9 @@ function scheduleFlipTimer(game: GameStateInternal) {
 }
 
 function emitErrorToPlayer(playerId: string, message: string) {
-  io.to(playerId).emit("error", { message });
+  const socket = getActiveSocketForPlayer(playerId);
+  if (!socket) return;
+  socket.emit("error", { message });
 }
 
 function clearClaimWindow(game: GameStateInternal) {
@@ -414,6 +492,22 @@ function selectNextHost(room: RoomState) {
 }
 
 function cleanupRoom(roomId: string) {
+  const room = rooms.get(roomId);
+  if (room) {
+    room.players.forEach((player) => {
+      const session = sessionsByPlayerId.get(player.id);
+      if (!session) return;
+      if (session.roomId !== roomId) return;
+      setSessionRoom(session, null);
+      if (session.socketId) {
+        const socket = io.sockets.sockets.get(session.socketId);
+        if (socket) {
+          emitSessionSelf(socket, session);
+        }
+      }
+    });
+  }
+
   const game = games.get(roomId);
   if (game) {
     clearGameTimers(game);
@@ -455,9 +549,20 @@ function removePlayerFromGame(game: GameStateInternal, playerId: string) {
   return { turnPlayerChanged: previousTurnPlayerId !== game.turnPlayerId };
 }
 
-function handlePlayerDeparture(roomId: string, playerId: string) {
+function handlePlayerLeave(roomId: string, playerId: string) {
   const room = rooms.get(roomId);
   if (!room) return;
+
+  const session = sessionsByPlayerId.get(playerId);
+  if (session && session.roomId === roomId) {
+    setSessionRoom(session, null);
+    if (session.socketId) {
+      const socket = io.sockets.sockets.get(session.socketId);
+      if (socket) {
+        emitSessionSelf(socket, session);
+      }
+    }
+  }
 
   room.players = room.players.filter((player) => player.id !== playerId);
   if (room.hostId === playerId) {
@@ -486,9 +591,149 @@ function handlePlayerDeparture(roomId: string, playerId: string) {
   broadcastRoomList();
 }
 
+function markPlayerDisconnectedInGame(game: GameStateInternal, playerId: string) {
+  const player = game.players.find((entry) => entry.id === playerId);
+  if (!player) {
+    return { turnPlayerChanged: false };
+  }
+
+  const previousTurnPlayerId = game.turnPlayerId;
+  player.connected = false;
+
+  if (game.claimWindow?.playerId === playerId) {
+    clearClaimWindow(game);
+    startClaimCooldown(game, playerId);
+  }
+
+  if (game.turnPlayerId === playerId) {
+    advanceTurn(game);
+  }
+
+  return { turnPlayerChanged: previousTurnPlayerId !== game.turnPlayerId };
+}
+
+function handlePlayerDisconnect(roomId: string, playerId: string) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  const roomPlayer = room.players.find((player) => player.id === playerId);
+  if (!roomPlayer) return;
+  roomPlayer.connected = false;
+  if (room.hostId === playerId) {
+    selectNextHost(room);
+  }
+
+  const game = games.get(roomId);
+  if (game) {
+    const { turnPlayerChanged } = markPlayerDisconnectedInGame(game, playerId);
+    if (game.status === "in-game" && turnPlayerChanged) {
+      scheduleFlipTimer(game);
+    }
+    emitGameState(roomId);
+  }
+
+  if (room.status !== "in-game") {
+    const connectedCount = room.players.filter((player) => player.connected).length;
+    if (connectedCount === 0) {
+      cleanupRoom(roomId);
+      return;
+    }
+  }
+
+  emitRoomState(roomId);
+  broadcastRoomList();
+}
+
 io.on("connection", (socket) => {
+  const socketData = getSocketData(socket);
+  const auth = socket.handshake.auth as { sessionId?: unknown } | undefined;
+  const incomingSessionId = normalizeSessionId(auth?.sessionId);
+
+  let session = sessionsById.get(incomingSessionId);
+  if (!session) {
+    session = {
+      sessionId: incomingSessionId,
+      playerId: randomUUID(),
+      name: "Player",
+      roomId: null,
+      socketId: null
+    };
+    sessionsById.set(session.sessionId, session);
+    sessionsByPlayerId.set(session.playerId, session);
+  }
+  bindSocketToSession(socket, session);
+
+  const restoreRoomId = session.roomId;
+  if (restoreRoomId) {
+    const room = rooms.get(restoreRoomId);
+    if (!room) {
+      setSessionRoom(session, null);
+    } else {
+      const roomPlayer = room.players.find((player) => player.id === session.playerId);
+      if (!roomPlayer) {
+        setSessionRoom(session, null);
+      } else {
+        roomPlayer.connected = true;
+        roomPlayer.name = sanitizeName(session.name);
+        socket.join(restoreRoomId);
+        socketData.roomId = restoreRoomId;
+
+        const game = games.get(restoreRoomId);
+        if (game) {
+          const gamePlayer = game.players.find((player) => player.id === session.playerId);
+          if (gamePlayer) {
+            gamePlayer.connected = true;
+            gamePlayer.name = roomPlayer.name;
+          }
+          emitGameState(restoreRoomId);
+        }
+        emitRoomState(restoreRoomId);
+        broadcastRoomList();
+      }
+    }
+  }
+  emitSessionSelf(socket, session);
+
   socket.on("room:list", () => {
     socket.emit("room:list", Array.from(rooms.values()).map(getRoomSummary));
+  });
+
+  socket.on("session:update-name", ({ name }: { name: string }) => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) return;
+
+    const resolvedName = sanitizeName(typeof name === "string" ? name : "");
+    currentSession.name = resolvedName;
+    emitSessionSelf(socket, currentSession);
+
+    const roomId = getSocketData(socket).roomId;
+    if (!roomId) return;
+
+    const room = rooms.get(roomId);
+    if (!room) {
+      setSessionRoom(currentSession, null);
+      emitSessionSelf(socket, currentSession);
+      return;
+    }
+
+    const roomPlayer = room.players.find((player) => player.id === currentSession.playerId);
+    if (roomPlayer) {
+      roomPlayer.name = resolvedName;
+      roomPlayer.connected = true;
+    }
+
+    const game = games.get(roomId);
+    if (game) {
+      const gamePlayer = game.players.find((player) => player.id === currentSession.playerId);
+      if (gamePlayer) {
+        gamePlayer.name = resolvedName;
+        gamePlayer.connected = true;
+      }
+      emitGameState(roomId);
+    }
+
+    emitRoomState(roomId);
+    broadcastRoomList();
   });
 
   socket.on(
@@ -512,21 +757,33 @@ io.on("connection", (socket) => {
       flipTimerSeconds?: number;
       claimTimerSeconds?: number;
     }) => {
-      if (socket.data.roomId) {
+      const currentSession = getSessionBySocket(socket);
+      if (!currentSession) {
+        emitError(socket, "Session not found.");
+        return;
+      }
+
+      if (getSocketData(socket).roomId) {
         emitError(socket, "You are already in a room.");
         return;
       }
 
       const resolvedRoomName = typeof roomName === "string" ? roomName : name ?? "";
-      const resolvedPlayerName = typeof playerName === "string" ? playerName : name ?? "";
+      const resolvedPlayerName =
+        typeof playerName === "string"
+          ? playerName
+          : typeof name === "string"
+            ? name
+            : currentSession.name;
       const resolvedFlipTimerEnabled = Boolean(flipTimerEnabled);
       const resolvedFlipTimerSeconds = clampFlipTimerSeconds(flipTimerSeconds);
       const resolvedClaimTimerSeconds = clampClaimTimerSeconds(claimTimerSeconds);
       const roomId = randomUUID();
       const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
+      const sanitizedPlayerName = sanitizeName(resolvedPlayerName);
       const player: Player = {
-        id: socket.id,
-        name: sanitizeName(resolvedPlayerName),
+        id: currentSession.playerId,
+        name: sanitizedPlayerName,
         connected: true,
         words: [],
         score: 0
@@ -537,7 +794,7 @@ io.on("connection", (socket) => {
         name: sanitizeRoomName(resolvedRoomName),
         isPublic,
         code,
-        hostId: socket.id,
+        hostId: currentSession.playerId,
         players: [player],
         status: "lobby",
         createdAt: Date.now(),
@@ -552,8 +809,11 @@ io.on("connection", (socket) => {
       };
 
       rooms.set(roomId, room);
-      socket.data.roomId = roomId;
+      currentSession.name = sanitizedPlayerName;
+      setSessionRoom(currentSession, roomId);
+      getSocketData(socket).roomId = roomId;
       socket.join(roomId);
+      emitSessionSelf(socket, currentSession);
 
       emitRoomState(roomId);
       broadcastRoomList();
@@ -561,7 +821,13 @@ io.on("connection", (socket) => {
   );
 
   socket.on("room:join", ({ roomId, name, code }: { roomId: string; name: string; code?: string }) => {
-    if (socket.data.roomId) {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+
+    if (getSocketData(socket).roomId) {
       emitError(socket, "You are already in a room.");
       return;
     }
@@ -575,66 +841,93 @@ io.on("connection", (socket) => {
       emitError(socket, "Game already started.");
       return;
     }
-    const maxPlayers = (room as RoomState & { maxPlayers?: number }).maxPlayers ?? MAX_PLAYERS;
-    if (room.players.length >= maxPlayers) {
-      emitError(socket, "Room is full.");
-      return;
-    }
     if (!room.isPublic && room.code && room.code !== code) {
       emitError(socket, "Invalid room code.");
       return;
     }
 
-    const player: Player = {
-      id: socket.id,
-      name: sanitizeName(name),
-      connected: true,
-      words: [],
-      score: 0
-    };
+    const resolvedName = sanitizeName(typeof name === "string" ? name : currentSession.name);
+    const existingPlayer = room.players.find((player) => player.id === currentSession.playerId);
+    if (existingPlayer) {
+      existingPlayer.name = resolvedName;
+      existingPlayer.connected = true;
+    } else {
+      const maxPlayers = (room as RoomState & { maxPlayers?: number }).maxPlayers ?? MAX_PLAYERS;
+      if (room.players.length >= maxPlayers) {
+        emitError(socket, "Room is full.");
+        return;
+      }
+      const player: Player = {
+        id: currentSession.playerId,
+        name: resolvedName,
+        connected: true,
+        words: [],
+        score: 0
+      };
+      room.players.push(player);
+    }
 
-    room.players.push(player);
-    socket.data.roomId = roomId;
+    currentSession.name = resolvedName;
+    setSessionRoom(currentSession, roomId);
+    getSocketData(socket).roomId = roomId;
     socket.join(roomId);
+    emitSessionSelf(socket, currentSession);
 
     emitRoomState(roomId);
     broadcastRoomList();
   });
 
   socket.on("player:update-name", ({ name }: { name: string }) => {
-    const roomId = socket.data.roomId;
-    if (!roomId) {
-      emitError(socket, "You are not in a room.");
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
       return;
     }
+
+    const roomId = getSocketData(socket).roomId;
+    const resolvedName = sanitizeName(typeof name === "string" ? name : "");
+    currentSession.name = resolvedName;
+    emitSessionSelf(socket, currentSession);
+
+    if (!roomId) return;
+
     const room = rooms.get(roomId);
     if (!room) {
-      emitError(socket, "Room not found.");
+      setSessionRoom(currentSession, null);
+      emitSessionSelf(socket, currentSession);
       return;
     }
-    const resolvedName = sanitizeName(typeof name === "string" ? name : "");
-    const roomPlayer = room.players.find((player) => player.id === socket.id);
+
+    const roomPlayer = room.players.find((player) => player.id === currentSession.playerId);
     if (roomPlayer) {
       roomPlayer.name = resolvedName;
     }
+
     const game = games.get(roomId);
     if (game) {
-      const gamePlayer = game.players.find((player) => player.id === socket.id);
+      const gamePlayer = game.players.find((player) => player.id === currentSession.playerId);
       if (gamePlayer) {
         gamePlayer.name = resolvedName;
       }
       emitGameState(roomId);
     }
+
     emitRoomState(roomId);
   });
 
   socket.on("room:start", ({ roomId }: { roomId: string }) => {
+    const playerId = getSocketData(socket).playerId;
+    if (!playerId) {
+      emitError(socket, "Player not found.");
+      return;
+    }
+
     const room = rooms.get(roomId);
     if (!room) {
       emitError(socket, "Room not found.");
       return;
     }
-    if (room.hostId !== socket.id) {
+    if (room.hostId !== playerId) {
       emitError(socket, "Only the host can start the game.");
       return;
     }
@@ -689,17 +982,30 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:leave", () => {
-    const roomId = socket.data.roomId as string | undefined;
+    const data = getSocketData(socket);
+    const roomId = data.roomId;
+    const playerId = data.playerId;
     if (!roomId) {
       emitError(socket, "You are not in a room.");
       return;
     }
-    socket.data.roomId = undefined;
+    if (!playerId) {
+      emitError(socket, "Player not found.");
+      return;
+    }
+
+    data.roomId = undefined;
     socket.leave(roomId);
-    handlePlayerDeparture(roomId, socket.id);
+    handlePlayerLeave(roomId, playerId);
   });
 
   socket.on("game:flip", ({ roomId }: { roomId: string }) => {
+    const playerId = getSocketData(socket).playerId;
+    if (!playerId) {
+      emitError(socket, "Player not found.");
+      return;
+    }
+
     enqueue(roomId, () => {
       const game = games.get(roomId);
       if (!game) {
@@ -710,7 +1016,7 @@ io.on("connection", (socket) => {
         emitError(socket, "Game has ended.");
         return;
       }
-      if (game.turnPlayerId !== socket.id) {
+      if (game.turnPlayerId !== playerId) {
         emitError(socket, "Not your turn to flip.");
         return;
       }
@@ -724,6 +1030,12 @@ io.on("connection", (socket) => {
   });
 
   socket.on("game:claim-intent", ({ roomId }: { roomId: string }) => {
+    const playerId = getSocketData(socket).playerId;
+    if (!playerId) {
+      emitError(socket, "Player not found.");
+      return;
+    }
+
     enqueue(roomId, () => {
       const game = games.get(roomId);
       if (!game) {
@@ -735,7 +1047,7 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const player = game.players.find((entry) => entry.id === socket.id);
+      const player = game.players.find((entry) => entry.id === playerId);
       if (!player) {
         emitError(socket, "Player not found.");
         return;
@@ -750,19 +1062,19 @@ io.on("connection", (socket) => {
       }
 
       if (game.claimWindow) {
-        if (game.claimWindow.playerId === socket.id) {
+        if (game.claimWindow.playerId === playerId) {
           return;
         }
         emitError(socket, "Another player is claiming a word.");
         return;
       }
 
-      if (isClaimCooldownActive(game, socket.id)) {
+      if (isClaimCooldownActive(game, playerId)) {
         emitError(socket, "Claim cooldown active. Wait for the next tile flip or 10 seconds.");
         return;
       }
 
-      openClaimWindow(game, socket.id);
+      openClaimWindow(game, playerId);
       emitGameState(roomId);
     });
   });
@@ -770,6 +1082,12 @@ io.on("connection", (socket) => {
   socket.on(
     "game:claim",
     ({ roomId, word }: { roomId: string; word: string; targetWordId?: string }) => {
+      const playerId = getSocketData(socket).playerId;
+      if (!playerId) {
+        emitError(socket, "Player not found.");
+        return;
+      }
+
       enqueue(roomId, () => {
         const game = games.get(roomId);
         if (!game) {
@@ -781,13 +1099,13 @@ io.on("connection", (socket) => {
           return;
         }
 
-        const player = game.players.find((entry) => entry.id === socket.id);
+        const player = game.players.find((entry) => entry.id === playerId);
         if (!player) {
           emitError(socket, "Player not found.");
           return;
         }
 
-        if (!game.claimWindow || game.claimWindow.playerId !== socket.id) {
+        if (!game.claimWindow || game.claimWindow.playerId !== playerId) {
           emitError(socket, "Press Enter to start a claim.");
           return;
         }
@@ -963,9 +1281,23 @@ io.on("connection", (socket) => {
   );
 
   socket.on("disconnect", () => {
-    const roomId = socket.data.roomId as string | undefined;
-    if (!roomId) return;
-    handlePlayerDeparture(roomId, socket.id);
+    const data = getSocketData(socket);
+    const roomId = data.roomId;
+    const playerId = data.playerId;
+    const sessionId = data.sessionId ?? socketToSessionId.get(socket.id);
+
+    socketToSessionId.delete(socket.id);
+    if (!sessionId) return;
+
+    const currentSession = sessionsById.get(sessionId);
+    if (!currentSession) return;
+    if (currentSession.socketId !== socket.id) {
+      return;
+    }
+
+    currentSession.socketId = null;
+    if (!roomId || !playerId) return;
+    handlePlayerDisconnect(roomId, playerId);
   });
 });
 

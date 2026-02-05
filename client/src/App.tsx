@@ -3,12 +3,64 @@ import { io } from "socket.io-client";
 import type { GameState, Player, RoomState, RoomSummary } from "@shared/types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
-const socket = io(SERVER_URL, { autoConnect: true });
+const SESSION_STORAGE_KEY = "anagram.sessionId";
+const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
+
+function generateId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function readStoredPlayerName() {
+  if (typeof window === "undefined") return "";
+  try {
+    const value = window.localStorage.getItem(PLAYER_NAME_STORAGE_KEY);
+    return value ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function persistPlayerName(name: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PLAYER_NAME_STORAGE_KEY, name);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function getOrCreateSessionId() {
+  if (typeof window === "undefined") return generateId();
+  try {
+    const existing = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (existing && existing.trim()) {
+      return existing.trim();
+    }
+    const created = generateId();
+    window.localStorage.setItem(SESSION_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return generateId();
+  }
+}
+
+const sessionId = getOrCreateSessionId();
+const socket = io(SERVER_URL, { autoConnect: false });
+socket.auth = { sessionId };
+socket.connect();
 
 function formatTime(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function sanitizeClientName(name: string) {
+  const trimmed = name.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 24) : "Player";
 }
 
 const DEFAULT_FLIP_TIMER_SECONDS = 15;
@@ -31,14 +83,15 @@ function clampClaimTimerSeconds(value: number) {
 }
 
 export default function App() {
-  const [socketId, setSocketId] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(socket.connected);
+  const [selfPlayerId, setSelfPlayerId] = useState<string | null>(null);
   const [roomList, setRoomList] = useState<RoomSummary[]>([]);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [playerName, setPlayerName] = useState("");
-  const [nameDraft, setNameDraft] = useState("");
+  const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
+  const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
   const [editNameDraft, setEditNameDraft] = useState("");
   const [isEditingName, setIsEditingName] = useState(false);
   const [lobbyView, setLobbyView] = useState<"list" | "create">("list");
@@ -64,21 +117,56 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const onConnect = () => setSocketId(socket.id ?? null);
-    const onDisconnect = () => setSocketId(null);
+    const onConnect = () => {
+      setIsConnected(true);
+      socket.emit("room:list");
+    };
+    const onDisconnect = () => setIsConnected(false);
     const onRoomList = (rooms: RoomSummary[]) => setRoomList(rooms);
     const onRoomState = (state: RoomState) => setRoomState(state);
     const onGameState = (state: GameState) => setGameState(state);
     const onError = ({ message }: { message: string }) => setError(message);
+    const onSessionSelf = ({
+      playerId,
+      name
+    }: {
+      playerId: string;
+      name: string;
+      roomId: string | null;
+    }) => {
+      setSelfPlayerId(playerId);
+      if (playerName.trim()) {
+        const sanitizedLocalName = sanitizeClientName(playerName);
+        if (sanitizedLocalName !== playerName) {
+          setPlayerName(sanitizedLocalName);
+          setNameDraft(sanitizedLocalName);
+          setEditNameDraft(sanitizedLocalName);
+          persistPlayerName(sanitizedLocalName);
+        }
+        if (sanitizedLocalName !== name) {
+          socket.emit("session:update-name", { name: sanitizedLocalName });
+        }
+        return;
+      }
+      const resolvedName = sanitizeClientName(name);
+      if (resolvedName === "Player") return;
+      setPlayerName(resolvedName);
+      setNameDraft(resolvedName);
+      setEditNameDraft(resolvedName);
+      persistPlayerName(resolvedName);
+    };
 
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
     socket.on("room:list", onRoomList);
     socket.on("room:state", onRoomState);
     socket.on("game:state", onGameState);
+    socket.on("session:self", onSessionSelf);
     socket.on("error", onError);
 
-    socket.emit("room:list");
+    if (socket.connected) {
+      onConnect();
+    }
 
     return () => {
       socket.off("connect", onConnect);
@@ -86,9 +174,10 @@ export default function App() {
       socket.off("room:list", onRoomList);
       socket.off("room:state", onRoomState);
       socket.off("game:state", onGameState);
+      socket.off("session:self", onSessionSelf);
       socket.off("error", onError);
     };
-  }, []);
+  }, [playerName]);
 
   const currentPlayers: Player[] = useMemo(() => {
     if (gameState) return gameState.players;
@@ -104,10 +193,10 @@ export default function App() {
     return remaining;
   }, [gameState?.endTimerEndsAt, now]);
 
-  const isHost = roomState?.hostId === socketId;
+  const isHost = roomState?.hostId === selfPlayerId;
   const isInGame = roomState?.status === "in-game" && gameState;
   const claimWindow = gameState?.claimWindow ?? null;
-  const isMyClaimWindow = claimWindow?.playerId === socketId;
+  const isMyClaimWindow = claimWindow?.playerId === selfPlayerId;
   const claimTimerSeconds = roomState?.claimTimer.seconds ?? DEFAULT_CLAIM_TIMER_SECONDS;
   const claimWindowRemainingMs = useMemo(() => {
     if (!claimWindow) return null;
@@ -122,7 +211,7 @@ export default function App() {
           0,
           Math.min(1, claimWindowRemainingMs / (claimTimerSeconds * 1000))
         );
-  const claimCooldownEndsAt = socketId ? gameState?.claimCooldowns?.[socketId] : null;
+  const claimCooldownEndsAt = selfPlayerId ? gameState?.claimCooldowns?.[selfPlayerId] : null;
   const claimCooldownRemainingMs =
     claimCooldownEndsAt && claimCooldownEndsAt > now ? claimCooldownEndsAt - now : null;
   const claimCooldownRemainingSeconds =
@@ -210,10 +299,12 @@ export default function App() {
   };
 
   const handleConfirmName = () => {
-    const trimmed = nameDraft.trim();
-    const resolvedName = trimmed.length > 0 ? trimmed : "Player";
+    const resolvedName = sanitizeClientName(nameDraft);
     setPlayerName(resolvedName);
+    setNameDraft(resolvedName);
     setEditNameDraft(resolvedName);
+    persistPlayerName(resolvedName);
+    socket.emit("session:update-name", { name: resolvedName });
   };
 
   const roomId = roomState?.id ?? null;
@@ -224,10 +315,12 @@ export default function App() {
   };
 
   const handleSaveEditName = () => {
-    const trimmed = editNameDraft.trim();
-    const resolvedName = trimmed.length > 0 ? trimmed : "Player";
+    const resolvedName = sanitizeClientName(editNameDraft);
     setPlayerName(resolvedName);
+    setNameDraft(resolvedName);
     setIsEditingName(false);
+    persistPlayerName(resolvedName);
+    socket.emit("session:update-name", { name: resolvedName });
     if (roomId) {
       socket.emit("player:update-name", { name: resolvedName });
     }
@@ -289,7 +382,7 @@ export default function App() {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       const isSpace = event.code === "Space" || event.key === " " || event.key === "Spacebar";
       if (isSpace) {
-        if (gameState?.turnPlayerId !== socketId) return;
+        if (gameState?.turnPlayerId !== selfPlayerId) return;
         event.preventDefault();
         handleFlip();
         return;
@@ -315,7 +408,7 @@ export default function App() {
     handleClaimIntent,
     isInGame,
     gameState?.turnPlayerId,
-    socketId,
+    selfPlayerId,
     isMyClaimWindow,
     claimWindow,
     isClaimCooldownActive
@@ -395,8 +488,8 @@ export default function App() {
             )}
           </div>
           <div className="status-connection">
-            <span className={socketId ? "dot online" : "dot"} />
-            {socketId ? "Connected" : "Connecting"}
+            <span className={isConnected ? "dot online" : "dot"} />
+            {isConnected ? "Connected" : "Connecting"}
           </div>
         </div>
       </header>
@@ -526,7 +619,7 @@ export default function App() {
             {!roomState.isPublic && roomState.code && <p className="muted">Code: {roomState.code}</p>}
             <div className="player-list">
               {currentPlayers.map((player) => (
-                <div key={player.id} className={player.id === socketId ? "player you" : "player"}>
+                <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
                   <span>{player.name}</span>
                   {!player.connected && <span className="badge">offline</span>}
                   {player.id === roomState.hostId && <span className="badge">host</span>}
@@ -570,7 +663,7 @@ export default function App() {
                 <strong>
                   {gameState.players.find((p) => p.id === gameState.turnPlayerId)?.name || "Unknown"}
                 </strong>
-                <button onClick={handleFlip} disabled={gameState.turnPlayerId !== socketId}>
+                <button onClick={handleFlip} disabled={gameState.turnPlayerId !== selfPlayerId}>
                   Flip Tile
                 </button>
               </div>
@@ -634,7 +727,7 @@ export default function App() {
             <h2>Players</h2>
             <div className="player-list">
               {gameState.players.map((player) => (
-                <div key={player.id} className={player.id === socketId ? "player you" : "player"}>
+                <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
                   <div>
                     <strong>{player.name}</strong>
                     {player.id === gameState.turnPlayerId && <span className="badge">turn</span>}
