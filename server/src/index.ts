@@ -161,6 +161,14 @@ function emitGameState(roomId: string) {
   io.to(roomId).emit("game:state", publicState);
 }
 
+function clearEndTimer(game: GameStateInternal) {
+  if (game.endTimer) {
+    clearTimeout(game.endTimer);
+    game.endTimer = undefined;
+  }
+  game.endTimerEndsAt = undefined;
+}
+
 function enqueue(roomId: string, task: () => Promise<void> | void) {
   const current = roomQueues.get(roomId) ?? Promise.resolve();
   const next = current
@@ -259,6 +267,13 @@ function clearClaimWindow(game: GameStateInternal) {
     game.claimWindowTimeout = undefined;
   }
   game.claimWindow = null;
+}
+
+function clearGameTimers(game: GameStateInternal) {
+  clearFlipTimer(game);
+  clearClaimWindow(game);
+  clearAllClaimCooldowns(game);
+  clearEndTimer(game);
 }
 
 function clearClaimCooldown(game: GameStateInternal, playerId: string) {
@@ -375,6 +390,86 @@ function advanceTurn(game: GameStateInternal) {
 function removeTilesFromCenter(game: GameStateInternal, tileIds: string[]) {
   const removeSet = new Set(tileIds);
   game.centerTiles = game.centerTiles.filter((tile) => !removeSet.has(tile.id));
+}
+
+function selectNextHost(room: RoomState) {
+  const nextHost = room.players.find((player) => player.connected) ?? room.players[0];
+  if (nextHost) {
+    room.hostId = nextHost.id;
+  }
+}
+
+function cleanupRoom(roomId: string) {
+  const game = games.get(roomId);
+  if (game) {
+    clearGameTimers(game);
+    games.delete(roomId);
+  }
+  rooms.delete(roomId);
+  roomQueues.delete(roomId);
+  broadcastRoomList();
+}
+
+function removePlayerFromGame(game: GameStateInternal, playerId: string) {
+  const previousTurnPlayerId = game.turnPlayerId;
+  clearClaimCooldown(game, playerId);
+  game.players = game.players.filter((player) => player.id !== playerId);
+  game.turnOrder = game.turnOrder.filter((id) => id !== playerId);
+
+  if (game.players.length === 0) {
+    game.turnPlayerId = "";
+    game.turnIndex = 0;
+    return { turnPlayerChanged: previousTurnPlayerId !== game.turnPlayerId };
+  }
+
+  if (game.claimWindow?.playerId === playerId) {
+    clearClaimWindow(game);
+  }
+
+  if (game.turnOrder.length === 0) {
+    game.turnPlayerId = "";
+    return { turnPlayerChanged: previousTurnPlayerId !== game.turnPlayerId };
+  }
+
+  if (game.turnPlayerId === playerId || !game.turnOrder.includes(game.turnPlayerId)) {
+    game.turnIndex = 0;
+    game.turnPlayerId = game.turnOrder[0];
+  } else {
+    game.turnIndex = Math.max(0, game.turnOrder.indexOf(game.turnPlayerId));
+  }
+
+  return { turnPlayerChanged: previousTurnPlayerId !== game.turnPlayerId };
+}
+
+function handlePlayerDeparture(roomId: string, playerId: string) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  room.players = room.players.filter((player) => player.id !== playerId);
+  if (room.hostId === playerId) {
+    selectNextHost(room);
+  }
+
+  const game = games.get(roomId);
+  if (game) {
+    const { turnPlayerChanged } = removePlayerFromGame(game, playerId);
+    if (game.players.length === 0) {
+      cleanupRoom(roomId);
+      return;
+    }
+    if (game.status === "in-game" && turnPlayerChanged) {
+      scheduleFlipTimer(game);
+    }
+    emitGameState(roomId);
+  }
+
+  if (room.players.length === 0) {
+    cleanupRoom(roomId);
+    return;
+  }
+
+  emitRoomState(roomId);
+  broadcastRoomList();
 }
 
 io.on("connection", (socket) => {
@@ -577,6 +672,17 @@ io.on("connection", (socket) => {
     emitRoomState(roomId);
     emitGameState(roomId);
     broadcastRoomList();
+  });
+
+  socket.on("room:leave", () => {
+    const roomId = socket.data.roomId as string | undefined;
+    if (!roomId) {
+      emitError(socket, "You are not in a room.");
+      return;
+    }
+    socket.data.roomId = undefined;
+    socket.leave(roomId);
+    handlePlayerDeparture(roomId, socket.id);
   });
 
   socket.on("game:flip", ({ roomId }: { roomId: string }) => {
@@ -845,32 +951,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const roomId = socket.data.roomId as string | undefined;
     if (!roomId) return;
-    const room = rooms.get(roomId);
-    if (!room) return;
-
-    const player = room.players.find((entry) => entry.id === socket.id);
-    if (player) {
-      player.connected = false;
-    }
-
-    const game = games.get(roomId);
-    if (game) {
-      const gamePlayer = game.players.find((entry) => entry.id === socket.id);
-      if (gamePlayer) {
-        gamePlayer.connected = false;
-        if (game.turnPlayerId === socket.id) {
-          advanceTurn(game);
-          scheduleFlipTimer(game);
-        }
-      }
-      if (game.claimWindow?.playerId === socket.id) {
-        clearClaimWindow(game);
-      }
-      emitGameState(roomId);
-    }
-
-    emitRoomState(roomId);
-    broadcastRoomList();
+    handlePlayerDeparture(roomId, socket.id);
   });
 });
 
