@@ -492,6 +492,33 @@ io.on("connection", (socket) => {
     broadcastRoomList();
   });
 
+  socket.on("player:update-name", ({ name }: { name: string }) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) {
+      emitError(socket, "You are not in a room.");
+      return;
+    }
+    const room = rooms.get(roomId);
+    if (!room) {
+      emitError(socket, "Room not found.");
+      return;
+    }
+    const resolvedName = sanitizeName(typeof name === "string" ? name : "");
+    const roomPlayer = room.players.find((player) => player.id === socket.id);
+    if (roomPlayer) {
+      roomPlayer.name = resolvedName;
+    }
+    const game = games.get(roomId);
+    if (game) {
+      const gamePlayer = game.players.find((player) => player.id === socket.id);
+      if (gamePlayer) {
+        gamePlayer.name = resolvedName;
+      }
+      emitGameState(roomId);
+    }
+    emitRoomState(roomId);
+  });
+
   socket.on("room:start", ({ roomId }: { roomId: string }) => {
     const room = rooms.get(roomId);
     if (!room) {
