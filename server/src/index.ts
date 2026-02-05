@@ -24,19 +24,33 @@ const MAX_CLAIM_TIMER_SECONDS = 10;
 const CLAIM_COOLDOWN_MS = 10_000;
 const MAX_PLAYERS = 8;
 
-const wordListCandidates = [
-  path.join(__dirname, "../TWL06 Wordlist.txt"),
-  path.join(__dirname, "../wordlist.txt"),
-  path.join(__dirname, "../../../wordlist.txt"),
-  path.join(process.cwd(), "server/wordlist.txt")
-];
+function resolveWordListPath(): string {
+  const envPath = process.env.WORD_LIST_PATH ? path.resolve(process.env.WORD_LIST_PATH) : null;
+  const candidates = [
+    envPath,
+    // Prefer the full TWL dictionary in both dev (server/src) and build (server/dist/server/src).
+    path.resolve(process.cwd(), "server", "TWL06 Wordlist.txt"),
+    path.resolve(process.cwd(), "TWL06 Wordlist.txt"),
+    path.resolve(__dirname, "..", "TWL06 Wordlist.txt"),
+    path.resolve(__dirname, "..", "..", "..", "TWL06 Wordlist.txt"),
+    // Fallback word list.
+    path.resolve(process.cwd(), "server", "wordlist.txt"),
+    path.resolve(process.cwd(), "wordlist.txt"),
+    path.resolve(__dirname, "..", "wordlist.txt"),
+    path.resolve(__dirname, "..", "..", "..", "wordlist.txt")
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
-const wordListPath = wordListCandidates.find((candidate) => fs.existsSync(candidate));
-if (!wordListPath) {
-    throw new Error("Word list not found. Expected server/TWL06 Wordlist.txt or server/wordlist.txt.");
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (found) return found;
+
+  throw new Error(
+    `Word list not found. Checked: ${candidates.join(", ")}`
+  );
 }
 
+const wordListPath = resolveWordListPath();
 const wordSet = loadWordSet(wordListPath);
+console.log(`[dictionary] Loaded ${wordSet.size} words from ${wordListPath}`);
 
 const app = express();
 app.use(cors());
