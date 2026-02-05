@@ -156,6 +156,7 @@ export default function App() {
   const isClaimButtonDisabled = isMyClaimWindow
     ? !claimWord.trim()
     : Boolean(claimWindow) || isClaimCooldownActive;
+  const isClaimInputDisabled = (Boolean(claimWindow) && !isMyClaimWindow) || isClaimCooldownActive;
 
   const handleCreate = () => {
     if (!playerName) return;
@@ -245,6 +246,7 @@ export default function App() {
   const handleClaimIntent = useCallback(() => {
     if (!roomId) return;
     if (claimWindow || isClaimCooldownActive) return;
+    claimInputRef.current?.focus();
     socket.emit("game:claim-intent", { roomId });
   }, [roomId, claimWindow, isClaimCooldownActive]);
 
@@ -608,11 +610,15 @@ export default function App() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                       e.preventDefault();
-                      handleClaimSubmit();
+                      if (isMyClaimWindow) {
+                        handleClaimSubmit();
+                        return;
+                      }
+                      handleClaimIntent();
                     }
                   }}
                   placeholder={claimPlaceholder}
-                  disabled={!isMyClaimWindow}
+                  disabled={isClaimInputDisabled}
                 />
                 <button
                   onClick={isMyClaimWindow ? handleClaimSubmit : handleClaimIntent}
