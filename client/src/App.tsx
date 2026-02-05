@@ -361,12 +361,10 @@ export default function App() {
                 );
               })}
             </div>
-          </section>
-
-          <section className="panel">
-            <h2>Start a new game</h2>
+            <div className="button-row">
+              <button onClick={() => setLobbyView("create")}>Create new game</button>
+            </div>
             <p className="muted">Signed in as {playerName}.</p>
-            <button onClick={() => setLobbyView("create")}>Create new game</button>
           </section>
         </div>
       )}
