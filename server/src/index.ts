@@ -18,6 +18,10 @@ const END_TIMER_MS = 60_000;
 const DEFAULT_FLIP_TIMER_SECONDS = 15;
 const MIN_FLIP_TIMER_SECONDS = 1;
 const MAX_FLIP_TIMER_SECONDS = 60;
+const DEFAULT_CLAIM_TIMER_SECONDS = 3;
+const MIN_CLAIM_TIMER_SECONDS = 1;
+const MAX_CLAIM_TIMER_SECONDS = 10;
+const CLAIM_COOLDOWN_MS = 10_000;
 const MAX_PLAYERS = 8;
 
 const wordListCandidates = [
@@ -68,6 +72,17 @@ type GameStateInternal = {
   flipTimerTimeout?: NodeJS.Timeout;
   flipTimerEndsAt?: number;
   flipTimerToken?: string;
+  claimTimer: {
+    seconds: number;
+  };
+  claimWindow: {
+    playerId: string;
+    endsAt: number;
+    token: string;
+  } | null;
+  claimWindowTimeout?: NodeJS.Timeout;
+  claimCooldowns: Record<string, number>;
+  claimCooldownTimeouts: Map<string, NodeJS.Timeout>;
 };
 
 const rooms = new Map<string, RoomState>();
@@ -90,6 +105,14 @@ function clampFlipTimerSeconds(value: unknown): number {
   }
   const rounded = Math.round(value);
   return Math.min(MAX_FLIP_TIMER_SECONDS, Math.max(MIN_FLIP_TIMER_SECONDS, rounded));
+}
+
+function clampClaimTimerSeconds(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_CLAIM_TIMER_SECONDS;
+  }
+  const rounded = Math.round(value);
+  return Math.min(MAX_CLAIM_TIMER_SECONDS, Math.max(MIN_CLAIM_TIMER_SECONDS, rounded));
 }
 
 function emitError(socket: { emit: Function }, message: string, code?: string) {
@@ -129,7 +152,11 @@ function emitGameState(roomId: string) {
     players: game.players,
     turnPlayerId: game.turnPlayerId,
     lastClaimAt: game.lastClaimAt,
-    endTimerEndsAt: game.endTimerEndsAt
+    endTimerEndsAt: game.endTimerEndsAt,
+    claimWindow: game.claimWindow
+      ? { playerId: game.claimWindow.playerId, endsAt: game.claimWindow.endsAt }
+      : null,
+    claimCooldowns: game.claimCooldowns
   };
   io.to(roomId).emit("game:state", publicState);
 }
@@ -222,6 +249,77 @@ function scheduleFlipTimer(game: GameStateInternal) {
   }, durationMs);
 }
 
+function emitErrorToPlayer(playerId: string, message: string) {
+  io.to(playerId).emit("error", { message });
+}
+
+function clearClaimWindow(game: GameStateInternal) {
+  if (game.claimWindowTimeout) {
+    clearTimeout(game.claimWindowTimeout);
+    game.claimWindowTimeout = undefined;
+  }
+  game.claimWindow = null;
+}
+
+function clearClaimCooldown(game: GameStateInternal, playerId: string) {
+  const timeout = game.claimCooldownTimeouts.get(playerId);
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+  game.claimCooldownTimeouts.delete(playerId);
+  delete game.claimCooldowns[playerId];
+}
+
+function clearAllClaimCooldowns(game: GameStateInternal) {
+  Object.keys(game.claimCooldowns).forEach((playerId) => clearClaimCooldown(game, playerId));
+}
+
+function startClaimCooldown(game: GameStateInternal, playerId: string) {
+  clearClaimCooldown(game, playerId);
+  const endsAt = Date.now() + CLAIM_COOLDOWN_MS;
+  game.claimCooldowns[playerId] = endsAt;
+  const timeout = setTimeout(() => {
+    enqueue(game.roomId, () => {
+      const current = games.get(game.roomId);
+      if (!current) return;
+      if (current.claimCooldowns[playerId] !== endsAt) return;
+      clearClaimCooldown(current, playerId);
+      emitGameState(current.roomId);
+    });
+  }, CLAIM_COOLDOWN_MS);
+  game.claimCooldownTimeouts.set(playerId, timeout);
+}
+
+function isClaimCooldownActive(game: GameStateInternal, playerId: string): boolean {
+  const endsAt = game.claimCooldowns[playerId];
+  if (!endsAt) return false;
+  if (endsAt <= Date.now()) {
+    clearClaimCooldown(game, playerId);
+    return false;
+  }
+  return true;
+}
+
+function openClaimWindow(game: GameStateInternal, playerId: string) {
+  clearClaimWindow(game);
+  const token = randomUUID();
+  const durationMs = game.claimTimer.seconds * 1000;
+  const endsAt = Date.now() + durationMs;
+  game.claimWindow = { playerId, endsAt, token };
+  game.claimWindowTimeout = setTimeout(() => {
+    enqueue(game.roomId, () => {
+      const current = games.get(game.roomId);
+      if (!current) return;
+      if (!current.claimWindow || current.claimWindow.token !== token) return;
+      const claimantId = current.claimWindow.playerId;
+      clearClaimWindow(current);
+      startClaimCooldown(current, claimantId);
+      emitErrorToPlayer(claimantId, "Claim window expired.");
+      emitGameState(current.roomId);
+    });
+  }, durationMs);
+}
+
 function scheduleEndTimer(game: GameStateInternal) {
   if (game.endTimer) {
     clearTimeout(game.endTimer);
@@ -229,6 +327,8 @@ function scheduleEndTimer(game: GameStateInternal) {
   clearFlipTimer(game);
   game.endTimerEndsAt = Date.now() + END_TIMER_MS;
   game.endTimer = setTimeout(() => {
+    clearClaimWindow(game);
+    clearAllClaimCooldowns(game);
     game.status = "ended";
     const room = rooms.get(game.roomId);
     if (room) {
@@ -245,6 +345,7 @@ function performFlip(game: GameStateInternal): boolean {
   const tile = game.bag.shift();
   if (!tile) return false;
   game.centerTiles.push(tile);
+  clearAllClaimCooldowns(game);
   advanceTurn(game);
 
   if (game.bag.length === 0) {
@@ -290,7 +391,8 @@ io.on("connection", (socket) => {
       isPublic,
       maxPlayers,
       flipTimerEnabled,
-      flipTimerSeconds
+      flipTimerSeconds,
+      claimTimerSeconds
     }: {
       roomName?: string;
       playerName?: string;
@@ -299,6 +401,7 @@ io.on("connection", (socket) => {
       maxPlayers: number;
       flipTimerEnabled?: boolean;
       flipTimerSeconds?: number;
+      claimTimerSeconds?: number;
     }) => {
       if (socket.data.roomId) {
         emitError(socket, "You are already in a room.");
@@ -309,6 +412,7 @@ io.on("connection", (socket) => {
       const resolvedPlayerName = typeof playerName === "string" ? playerName : name ?? "";
       const resolvedFlipTimerEnabled = Boolean(flipTimerEnabled);
       const resolvedFlipTimerSeconds = clampFlipTimerSeconds(flipTimerSeconds);
+      const resolvedClaimTimerSeconds = clampClaimTimerSeconds(claimTimerSeconds);
       const roomId = randomUUID();
       const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
       const player: Player = {
@@ -332,6 +436,9 @@ io.on("connection", (socket) => {
         flipTimer: {
           enabled: resolvedFlipTimerEnabled,
           seconds: resolvedFlipTimerSeconds
+        },
+        claimTimer: {
+          seconds: resolvedClaimTimerSeconds
         }
       };
 
@@ -412,6 +519,9 @@ io.on("connection", (socket) => {
       enabled: false,
       seconds: DEFAULT_FLIP_TIMER_SECONDS
     };
+    const claimTimer = room.claimTimer ?? {
+      seconds: DEFAULT_CLAIM_TIMER_SECONDS
+    };
 
     const game: GameStateInternal = {
       roomId: room.id,
@@ -426,7 +536,13 @@ io.on("connection", (socket) => {
       flipTimer: {
         enabled: flipTimer.enabled,
         seconds: clampFlipTimerSeconds(flipTimer.seconds)
-      }
+      },
+      claimTimer: {
+        seconds: clampClaimTimerSeconds(claimTimer.seconds)
+      },
+      claimWindow: null,
+      claimCooldowns: {},
+      claimCooldownTimeouts: new Map()
     };
 
     games.set(roomId, game);
@@ -460,6 +576,50 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("game:claim-intent", ({ roomId }: { roomId: string }) => {
+    enqueue(roomId, () => {
+      const game = games.get(roomId);
+      if (!game) {
+        emitError(socket, "Game not found.");
+        return;
+      }
+      if (game.status !== "in-game") {
+        emitError(socket, "Game has ended.");
+        return;
+      }
+
+      const player = game.players.find((entry) => entry.id === socket.id);
+      if (!player) {
+        emitError(socket, "Player not found.");
+        return;
+      }
+
+      if (game.claimWindow && game.claimWindow.endsAt <= Date.now()) {
+        const claimantId = game.claimWindow.playerId;
+        clearClaimWindow(game);
+        startClaimCooldown(game, claimantId);
+        emitErrorToPlayer(claimantId, "Claim window expired.");
+        emitGameState(roomId);
+      }
+
+      if (game.claimWindow) {
+        if (game.claimWindow.playerId === socket.id) {
+          return;
+        }
+        emitError(socket, "Another player is claiming a word.");
+        return;
+      }
+
+      if (isClaimCooldownActive(game, socket.id)) {
+        emitError(socket, "Claim cooldown active. Wait for the next tile flip or 10 seconds.");
+        return;
+      }
+
+      openClaimWindow(game, socket.id);
+      emitGameState(roomId);
+    });
+  });
+
   socket.on(
     "game:claim",
     ({ roomId, word }: { roomId: string; word: string; targetWordId?: string }) => {
@@ -480,13 +640,39 @@ io.on("connection", (socket) => {
           return;
         }
 
-        const normalized = normalizeWord(word);
+        if (!game.claimWindow || game.claimWindow.playerId !== socket.id) {
+          emitError(socket, "Press Enter to start a claim.");
+          return;
+        }
+        if (game.claimWindow.endsAt <= Date.now()) {
+          clearClaimWindow(game);
+          startClaimCooldown(game, player.id);
+          emitError(socket, "Claim window expired.");
+          emitGameState(roomId);
+          return;
+        }
+
+        const rawWord = typeof word === "string" ? word : "";
+        const normalized = normalizeWord(rawWord);
+        if (!normalized) {
+          clearClaimWindow(game);
+          startClaimCooldown(game, player.id);
+          emitError(socket, "Enter a word to claim.");
+          emitGameState(roomId);
+          return;
+        }
         if (!/^[A-Z]+$/.test(normalized)) {
+          clearClaimWindow(game);
+          startClaimCooldown(game, player.id);
           emitError(socket, "Word must contain only letters A-Z.");
+          emitGameState(roomId);
           return;
         }
         if (!isValidWord(normalized, wordSet)) {
+          clearClaimWindow(game);
+          startClaimCooldown(game, player.id);
           emitError(socket, "Word is not valid.");
+          emitGameState(roomId);
           return;
         }
 
@@ -587,7 +773,10 @@ io.on("connection", (socket) => {
         } else {
           selectedTiles = selectTilesForWord(normalized, game.centerTiles);
           if (!selectedTiles) {
+            clearClaimWindow(game);
+            startClaimCooldown(game, player.id);
             emitError(socket, "Not enough tiles in the center to make that word.");
+            emitGameState(roomId);
             return;
           }
           combinedTileIds = selectedTiles.map((tile) => tile.id);
@@ -617,6 +806,7 @@ io.on("connection", (socket) => {
           scheduleEndTimer(game);
         }
 
+        clearClaimWindow(game);
         emitGameState(roomId);
       });
     }
@@ -642,6 +832,9 @@ io.on("connection", (socket) => {
           advanceTurn(game);
           scheduleFlipTimer(game);
         }
+      }
+      if (game.claimWindow?.playerId === socket.id) {
+        clearClaimWindow(game);
       }
       emitGameState(roomId);
     }
