@@ -142,7 +142,7 @@ export default function App() {
     if (isClaimCooldownActive && claimCooldownRemainingSeconds !== null) {
       return `Cooldown: ${claimCooldownRemainingSeconds}s or next flip.`;
     }
-    return "Press Enter to start a claim.";
+    return "Press enter to claim a word";
   }, [
     claimWindow,
     claimWindowRemainingSeconds,
@@ -151,11 +151,7 @@ export default function App() {
     isClaimCooldownActive,
     claimCooldownRemainingSeconds
   ]);
-  const claimPlaceholder = isMyClaimWindow
-    ? "Type your word"
-    : claimWindow
-      ? "Claim in progress"
-      : "Press Enter to claim";
+  const claimPlaceholder = claimStatus;
   const claimButtonLabel = isMyClaimWindow ? "Submit Claim" : "Start Claim";
   const isClaimButtonDisabled = isMyClaimWindow
     ? !claimWord.trim()
@@ -405,7 +401,7 @@ export default function App() {
 
       {!roomState && lobbyView === "list" && (
         <div className="grid">
-          <section className="panel">
+          <section className="panel panel-narrow">
             <h2>Open Games</h2>
             <div className="room-list">
               {lobbyRooms.length === 0 && <p className="muted">No open games yet.</p>}
@@ -429,16 +425,14 @@ export default function App() {
             <div className="button-row">
               <button onClick={() => setLobbyView("create")}>Create new game</button>
             </div>
-            <p className="muted">Signed in as {playerName}.</p>
           </section>
         </div>
       )}
 
       {!roomState && lobbyView === "create" && (
         <div className="grid">
-          <section className="panel">
+          <section className="panel panel-narrow">
             <h2>New Game</h2>
-            <p className="muted">Hosting as {playerName}.</p>
             <label>
               Room name
               <input
@@ -556,9 +550,6 @@ export default function App() {
                 {roomState?.flipTimer.enabled && (
                   <p className="muted">Auto flip: {roomState.flipTimer.seconds}s</p>
                 )}
-                {roomState?.claimTimer && (
-                  <p className="muted">Claim timer: {roomState.claimTimer.seconds}s</p>
-                )}
               </div>
               <div className="turn">
                 <span>Turn:</span>
@@ -585,11 +576,6 @@ export default function App() {
             </div>
 
             <div className="claim-box">
-              <div className="claim-header">
-                <h3>Claim a Word</h3>
-                <div className="muted">Steals are detected automatically.</div>
-              </div>
-              <div className="claim-status muted">{claimStatus}</div>
               {claimWindow && (
                 <div
                   className="claim-timer"

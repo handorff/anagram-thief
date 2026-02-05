@@ -193,6 +193,11 @@ h1, h2, h3 {
   gap: 1rem;
 }
 
+.panel-narrow {
+  width: min(100%, 720px);
+  justify-self: center;
+}
+
 .panel ul {
   padding-left: 1.2rem;
   margin: 0;
@@ -347,15 +352,10 @@ button:disabled {
 }
 
 .claim-box {
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-}
-
-.claim-status {
-  font-size: 0.95rem;
 }
 
 .claim-timer {
