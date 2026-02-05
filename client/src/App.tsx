@@ -39,6 +39,8 @@ export default function App() {
 
   const [playerName, setPlayerName] = useState("");
   const [nameDraft, setNameDraft] = useState("");
+  const [editNameDraft, setEditNameDraft] = useState("");
+  const [isEditingName, setIsEditingName] = useState(false);
   const [lobbyView, setLobbyView] = useState<"list" | "create">("list");
   const [joinPrompt, setJoinPrompt] = useState<{ roomId: string; roomName: string } | null>(null);
 
@@ -205,10 +207,32 @@ export default function App() {
 
   const handleConfirmName = () => {
     const trimmed = nameDraft.trim();
-    setPlayerName(trimmed.length > 0 ? trimmed : "Player");
+    const resolvedName = trimmed.length > 0 ? trimmed : "Player";
+    setPlayerName(resolvedName);
+    setEditNameDraft(resolvedName);
   };
 
   const roomId = roomState?.id ?? null;
+
+  const handleStartEditName = () => {
+    setEditNameDraft(playerName);
+    setIsEditingName(true);
+  };
+
+  const handleSaveEditName = () => {
+    const trimmed = editNameDraft.trim();
+    const resolvedName = trimmed.length > 0 ? trimmed : "Player";
+    setPlayerName(resolvedName);
+    setIsEditingName(false);
+    if (roomId) {
+      socket.emit("player:update-name", { name: resolvedName });
+    }
+  };
+
+  const handleCancelEditName = () => {
+    setEditNameDraft(playerName);
+    setIsEditingName(false);
+  };
 
   const handleFlip = useCallback(() => {
     if (!roomId) return;
@@ -326,8 +350,49 @@ export default function App() {
           <h1>Anagram Thief</h1>
         </div>
         <div className="status">
-          <span className={socketId ? "dot online" : "dot"} />
-          {socketId ? "Connected" : "Connecting"}
+          <div className="status-identity">
+            {isEditingName ? (
+              <>
+                <input
+                  className="status-name-input"
+                  value={editNameDraft}
+                  onChange={(event) => setEditNameDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      handleSaveEditName();
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      handleCancelEditName();
+                    }
+                  }}
+                  aria-label="Edit display name"
+                />
+                <button
+                  className="status-button"
+                  onClick={handleSaveEditName}
+                  disabled={!editNameDraft.trim()}
+                >
+                  Save
+                </button>
+                <button className="status-button ghost" onClick={handleCancelEditName}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="status-name">{playerName}</span>
+                <button className="icon-button" onClick={handleStartEditName} aria-label="Edit name">
+                  ✎
+                </button>
+              </>
+            )}
+          </div>
+          <div className="status-connection">
+            <span className={socketId ? "dot online" : "dot"} />
+            {socketId ? "Connected" : "Connecting"}
+          </div>
         </div>
       </header>
 
