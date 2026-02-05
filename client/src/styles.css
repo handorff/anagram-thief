@@ -291,6 +291,25 @@ button:disabled {
   gap: 0.75rem;
 }
 
+.claim-status {
+  font-size: 0.95rem;
+}
+
+.claim-timer {
+  height: 8px;
+  width: 100%;
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.claim-progress {
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, #22c55e);
+  transition: width 0.1s linear;
+}
+
 .claim-input {
   display: flex;
   gap: 0.75rem;
@@ -298,6 +317,11 @@ button:disabled {
 
 .claim-input input {
   flex: 1;
+}
+
+.claim-input input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .target {

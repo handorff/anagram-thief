@@ -5,6 +5,10 @@ export interface FlipTimerSettings {
   seconds: number;
 }
 
+export interface ClaimTimerSettings {
+  seconds: number;
+}
+
 export interface Tile {
   id: string;
   letter: string;
@@ -45,6 +49,12 @@ export interface RoomState {
   status: RoomStatus;
   createdAt: number;
   flipTimer: FlipTimerSettings;
+  claimTimer: ClaimTimerSettings;
+}
+
+export interface ClaimWindowState {
+  playerId: string;
+  endsAt: number;
 }
 
 export interface GameState {
@@ -56,4 +66,6 @@ export interface GameState {
   turnPlayerId: string;
   lastClaimAt: number | null;
   endTimerEndsAt?: number;
+  claimWindow: ClaimWindowState | null;
+  claimCooldowns: Record<string, number>;
 }

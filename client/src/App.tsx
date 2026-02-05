@@ -14,11 +14,20 @@ function formatTime(seconds: number) {
 const DEFAULT_FLIP_TIMER_SECONDS = 15;
 const MIN_FLIP_TIMER_SECONDS = 1;
 const MAX_FLIP_TIMER_SECONDS = 60;
+const DEFAULT_CLAIM_TIMER_SECONDS = 3;
+const MIN_CLAIM_TIMER_SECONDS = 1;
+const MAX_CLAIM_TIMER_SECONDS = 10;
 
 function clampFlipTimerSeconds(value: number) {
   const rounded = Math.round(value);
   if (Number.isNaN(rounded)) return DEFAULT_FLIP_TIMER_SECONDS;
   return Math.min(MAX_FLIP_TIMER_SECONDS, Math.max(MIN_FLIP_TIMER_SECONDS, rounded));
+}
+
+function clampClaimTimerSeconds(value: number) {
+  const rounded = Math.round(value);
+  if (Number.isNaN(rounded)) return DEFAULT_CLAIM_TIMER_SECONDS;
+  return Math.min(MAX_CLAIM_TIMER_SECONDS, Math.max(MIN_CLAIM_TIMER_SECONDS, rounded));
 }
 
 export default function App() {
@@ -38,6 +47,7 @@ export default function App() {
   const [createMaxPlayers, setCreateMaxPlayers] = useState(8);
   const [createFlipTimerEnabled, setCreateFlipTimerEnabled] = useState(false);
   const [createFlipTimerSeconds, setCreateFlipTimerSeconds] = useState(DEFAULT_FLIP_TIMER_SECONDS);
+  const [createClaimTimerSeconds, setCreateClaimTimerSeconds] = useState(DEFAULT_CLAIM_TIMER_SECONDS);
 
   const [joinCode, setJoinCode] = useState("");
 
@@ -94,17 +104,73 @@ export default function App() {
 
   const isHost = roomState?.hostId === socketId;
   const isInGame = roomState?.status === "in-game" && gameState;
+  const claimWindow = gameState?.claimWindow ?? null;
+  const isMyClaimWindow = claimWindow?.playerId === socketId;
+  const claimTimerSeconds = roomState?.claimTimer.seconds ?? DEFAULT_CLAIM_TIMER_SECONDS;
+  const claimWindowRemainingMs = useMemo(() => {
+    if (!claimWindow) return null;
+    return Math.max(0, claimWindow.endsAt - now);
+  }, [claimWindow, now]);
+  const claimWindowRemainingSeconds =
+    claimWindowRemainingMs === null ? null : Math.max(0, Math.ceil(claimWindowRemainingMs / 1000));
+  const claimProgress =
+    claimWindowRemainingMs === null
+      ? 0
+      : Math.max(
+          0,
+          Math.min(1, claimWindowRemainingMs / (claimTimerSeconds * 1000))
+        );
+  const claimCooldownEndsAt = socketId ? gameState?.claimCooldowns?.[socketId] : null;
+  const claimCooldownRemainingMs =
+    claimCooldownEndsAt && claimCooldownEndsAt > now ? claimCooldownEndsAt - now : null;
+  const claimCooldownRemainingSeconds =
+    claimCooldownRemainingMs === null ? null : Math.max(0, Math.ceil(claimCooldownRemainingMs / 1000));
+  const isClaimCooldownActive = claimCooldownRemainingMs !== null;
+  const claimWindowPlayerName = useMemo(() => {
+    if (!claimWindow || !gameState) return "Unknown";
+    return gameState.players.find((player) => player.id === claimWindow.playerId)?.name ?? "Unknown";
+  }, [claimWindow, gameState]);
+  const claimStatus = useMemo(() => {
+    if (claimWindow && claimWindowRemainingSeconds !== null) {
+      if (isMyClaimWindow) {
+        return `Your claim window: ${claimWindowRemainingSeconds}s`;
+      }
+      return `${claimWindowPlayerName} is claiming (${claimWindowRemainingSeconds}s)`;
+    }
+    if (isClaimCooldownActive && claimCooldownRemainingSeconds !== null) {
+      return `Cooldown: ${claimCooldownRemainingSeconds}s or next flip.`;
+    }
+    return "Press Enter to start a claim.";
+  }, [
+    claimWindow,
+    claimWindowRemainingSeconds,
+    isMyClaimWindow,
+    claimWindowPlayerName,
+    isClaimCooldownActive,
+    claimCooldownRemainingSeconds
+  ]);
+  const claimPlaceholder = isMyClaimWindow
+    ? "Type your word"
+    : claimWindow
+      ? "Claim in progress"
+      : "Press Enter to claim";
+  const claimButtonLabel = isMyClaimWindow ? "Submit Claim" : "Start Claim";
+  const isClaimButtonDisabled = isMyClaimWindow
+    ? !claimWord.trim()
+    : Boolean(claimWindow) || isClaimCooldownActive;
 
   const handleCreate = () => {
     if (!playerName) return;
     const flipTimerSeconds = clampFlipTimerSeconds(createFlipTimerSeconds);
+    const claimTimerSeconds = clampClaimTimerSeconds(createClaimTimerSeconds);
     socket.emit("room:create", {
       roomName: createRoomName,
       playerName,
       isPublic: createPublic,
       maxPlayers: createMaxPlayers,
       flipTimerEnabled: createFlipTimerEnabled,
-      flipTimerSeconds
+      flipTimerSeconds,
+      claimTimerSeconds
     });
   };
 
@@ -147,11 +213,17 @@ export default function App() {
   const handleFlip = useCallback(() => {
     if (!roomId) return;
     socket.emit("game:flip", { roomId });
-    requestAnimationFrame(() => claimInputRef.current?.focus());
   }, [roomId]);
 
-  const handleClaim = () => {
+  const handleClaimIntent = useCallback(() => {
+    if (!roomId) return;
+    if (claimWindow || isClaimCooldownActive) return;
+    socket.emit("game:claim-intent", { roomId });
+  }, [roomId, claimWindow, isClaimCooldownActive]);
+
+  const handleClaimSubmit = useCallback(() => {
     if (!roomState) return;
+    if (!isMyClaimWindow) return;
     if (!claimWord.trim()) return;
     socket.emit("game:claim", {
       roomId: roomState.id,
@@ -159,13 +231,15 @@ export default function App() {
     });
     setClaimWord("");
     requestAnimationFrame(() => claimInputRef.current?.focus());
-  };
+  }, [roomState, isMyClaimWindow, claimWord]);
 
   useEffect(() => {
-    if (isInGame) {
-      requestAnimationFrame(() => claimInputRef.current?.focus());
+    if (!isMyClaimWindow) {
+      setClaimWord("");
+      return;
     }
-  }, [isInGame, gameState?.centerTiles.length, gameState?.turnPlayerId]);
+    requestAnimationFrame(() => claimInputRef.current?.focus());
+  }, [isMyClaimWindow]);
 
   useEffect(() => {
     if (roomState) {
@@ -180,16 +254,43 @@ export default function App() {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      const isEditableTarget =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       const isSpace = event.code === "Space" || event.key === " " || event.key === "Spacebar";
-      if (!isSpace) return;
-      if (gameState?.turnPlayerId !== socketId) return;
-      event.preventDefault();
-      handleFlip();
+      if (isSpace) {
+        if (gameState?.turnPlayerId !== socketId) return;
+        event.preventDefault();
+        handleFlip();
+        return;
+      }
+
+      if (event.key === "Enter" && !isEditableTarget) {
+        if (isMyClaimWindow) {
+          claimInputRef.current?.focus();
+          return;
+        }
+        if (claimWindow || isClaimCooldownActive) {
+          return;
+        }
+        event.preventDefault();
+        handleClaimIntent();
+      }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleFlip, isInGame, gameState?.turnPlayerId, socketId]);
+  }, [
+    handleFlip,
+    handleClaimIntent,
+    isInGame,
+    gameState?.turnPlayerId,
+    socketId,
+    isMyClaimWindow,
+    claimWindow,
+    isClaimCooldownActive
+  ]);
 
   if (!playerName) {
     return (
@@ -223,7 +324,6 @@ export default function App() {
       <header className="header">
         <div>
           <h1>Anagram Thief</h1>
-          <p className="subtitle">Steal words in real-time. Flip one tile per turn.</p>
         </div>
         <div className="status">
           <span className={socketId ? "dot online" : "dot"} />
@@ -324,6 +424,19 @@ export default function App() {
                 disabled={!createFlipTimerEnabled}
               />
             </label>
+            <label>
+              Claim timer seconds (1-10)
+              <input
+                type="number"
+                min={MIN_CLAIM_TIMER_SECONDS}
+                max={MAX_CLAIM_TIMER_SECONDS}
+                value={createClaimTimerSeconds}
+                onChange={(e) => setCreateClaimTimerSeconds(Number(e.target.value))}
+                onBlur={() =>
+                  setCreateClaimTimerSeconds((current) => clampClaimTimerSeconds(current))
+                }
+              />
+            </label>
             <div className="button-row">
               <button className="button-secondary" onClick={() => setLobbyView("list")}>
                 Back to games
@@ -336,7 +449,7 @@ export default function App() {
             <h2>How to Play</h2>
             <ul>
               <li>Flip one tile on your turn.</li>
-              <li>Claim words any time using center tiles.</li>
+              <li>Press Enter to start a claim using center tiles.</li>
               <li>Steals are automatic when possible.</li>
               <li>Steals must rearrange letters (no substring extensions).</li>
               <li>Game ends 60s after bag is empty.</li>
@@ -353,6 +466,7 @@ export default function App() {
             <p className="muted">
               Flip timer: {roomState.flipTimer.enabled ? `${roomState.flipTimer.seconds}s` : "off"}
             </p>
+            <p className="muted">Claim timer: {roomState.claimTimer.seconds}s</p>
             {!roomState.isPublic && roomState.code && <p className="muted">Code: {roomState.code}</p>}
             <div className="player-list">
               {currentPlayers.map((player) => (
@@ -370,7 +484,7 @@ export default function App() {
             <h2>How to Play</h2>
             <ul>
               <li>Flip one tile on your turn.</li>
-              <li>Claim words any time using center tiles.</li>
+              <li>Press Enter to start a claim using center tiles.</li>
               <li>Steals are automatic when possible.</li>
               <li>Steals must rearrange letters (no substring extensions).</li>
               <li>Game ends 60s after bag is empty.</li>
@@ -388,6 +502,9 @@ export default function App() {
                 <p className="muted">Bag: {gameState.bagCount} tiles</p>
                 {roomState?.flipTimer.enabled && (
                   <p className="muted">Auto flip: {roomState.flipTimer.seconds}s</p>
+                )}
+                {roomState?.claimTimer && (
+                  <p className="muted">Claim timer: {roomState.claimTimer.seconds}s</p>
                 )}
               </div>
               <div className="turn">
@@ -419,6 +536,19 @@ export default function App() {
                 <h3>Claim a Word</h3>
                 <div className="muted">Steals are detected automatically.</div>
               </div>
+              <div className="claim-status muted">{claimStatus}</div>
+              {claimWindow && (
+                <div
+                  className="claim-timer"
+                  role="progressbar"
+                  aria-label="Claim timer"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(claimProgress * 100)}
+                >
+                  <div className="claim-progress" style={{ width: `${claimProgress * 100}%` }} />
+                </div>
+              )}
               <div className="claim-input">
                 <input
                   ref={claimInputRef}
@@ -427,13 +557,17 @@ export default function App() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                       e.preventDefault();
-                      handleClaim();
+                      handleClaimSubmit();
                     }
                   }}
-                  placeholder="Enter word"
+                  placeholder={claimPlaceholder}
+                  disabled={!isMyClaimWindow}
                 />
-                <button onClick={handleClaim} disabled={!claimWord.trim()}>
-                  Claim
+                <button
+                  onClick={isMyClaimWindow ? handleClaimSubmit : handleClaimIntent}
+                  disabled={isClaimButtonDisabled}
+                >
+                  {claimButtonLabel}
                 </button>
               </div>
             </div>
