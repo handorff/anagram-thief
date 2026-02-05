@@ -201,6 +201,13 @@ export default function App() {
     socket.emit("room:start", { roomId: roomState.id });
   };
 
+  const handleLeaveRoom = () => {
+    if (!roomState) return;
+    socket.emit("room:leave");
+    setRoomState(null);
+    setGameState(null);
+  };
+
   const handleConfirmName = () => {
     const trimmed = nameDraft.trim();
     const resolvedName = trimmed.length > 0 ? trimmed : "Player";
@@ -524,7 +531,12 @@ export default function App() {
                 </div>
               ))}
             </div>
-            {isHost && <button onClick={handleStart}>Start Game</button>}
+            <div className="button-row">
+              <button className="button-secondary" onClick={handleLeaveRoom}>
+                Back to lobby
+              </button>
+              {isHost && <button onClick={handleStart}>Start Game</button>}
+            </div>
           </section>
 
           <section className="panel">
