@@ -443,16 +443,6 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel">
-            <h2>How to Play</h2>
-            <ul>
-              <li>Flip one tile on your turn.</li>
-              <li>Press Enter to start a claim using center tiles.</li>
-              <li>Steals are automatic when possible.</li>
-              <li>Steals must rearrange letters (no substring extensions).</li>
-              <li>Game ends 60s after bag is empty.</li>
-            </ul>
-          </section>
         </div>
       )}
 
