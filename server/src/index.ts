@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Server } from "socket.io";
-import type { GameState, Player, RoomState, RoomSummary, Tile, Word } from "../../shared/types";
+import type { GameState, Player, RoomState, RoomSummary, Tile, Word } from "../../shared/types.js";
 import { createTileBag } from "../../shared/tileBag.js";
 import { isValidWord, loadWordSet, normalizeWord } from "../../shared/wordValidation.js";
 

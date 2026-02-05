@@ -1,4 +1,4 @@
-import type { Tile } from "./types";
+import type { Tile } from "./types.js";
 
 const DISTRIBUTION: Record<string, number> = {
   A: 9,
