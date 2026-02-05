@@ -105,6 +105,7 @@ export default function App() {
   const [createClaimTimerSeconds, setCreateClaimTimerSeconds] = useState(DEFAULT_CLAIM_TIMER_SECONDS);
 
   const [joinCode, setJoinCode] = useState("");
+  const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
 
   const [claimWord, setClaimWord] = useState("");
   const claimInputRef = useRef<HTMLInputElement>(null);
@@ -298,6 +299,11 @@ export default function App() {
     setGameState(null);
   };
 
+  const handleConfirmLeaveGame = () => {
+    setShowLeaveGameConfirm(false);
+    handleLeaveRoom();
+  };
+
   const handleConfirmName = () => {
     const resolvedName = sanitizeClientName(nameDraft);
     setPlayerName(resolvedName);
@@ -370,6 +376,11 @@ export default function App() {
     }
     setLobbyView("list");
   }, [roomState]);
+
+  useEffect(() => {
+    if (isInGame) return;
+    setShowLeaveGameConfirm(false);
+  }, [isInGame]);
 
   useEffect(() => {
     if (!isInGame) return;
@@ -724,7 +735,12 @@ export default function App() {
           </section>
 
           <section className="panel scoreboard">
-            <h2>Players</h2>
+            <div className="scoreboard-header">
+              <h2>Players</h2>
+              <button className="button-danger" onClick={() => setShowLeaveGameConfirm(true)}>
+                Leave Game
+              </button>
+            </div>
             <div className="player-list">
               {gameState.players.map((player) => (
                 <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
@@ -794,6 +810,25 @@ export default function App() {
               </button>
               <button onClick={handleJoinWithCode} disabled={!joinCode.trim()}>
                 Join game
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showLeaveGameConfirm && (
+        <div className="join-overlay">
+          <div className="panel join-modal leave-confirm-modal">
+            <h2>Leave this game?</h2>
+            <p className="muted">
+              This removes you from the current game, and you will not be able to rejoin by reloading.
+            </p>
+            <div className="button-row">
+              <button className="button-secondary" onClick={() => setShowLeaveGameConfirm(false)}>
+                Stay in game
+              </button>
+              <button className="button-danger" onClick={handleConfirmLeaveGame}>
+                Leave game
               </button>
             </div>
           </div>

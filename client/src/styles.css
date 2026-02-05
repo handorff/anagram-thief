@@ -252,6 +252,16 @@ button:disabled {
   color: var(--text);
 }
 
+.button-danger {
+  background: linear-gradient(135deg, #fb7185, #e11d48);
+  color: #fff1f2;
+  border: 1px solid rgba(251, 113, 133, 0.75);
+}
+
+.button-danger:hover {
+  filter: brightness(1.05);
+}
+
 .room-list {
   display: flex;
   flex-direction: column;
@@ -398,6 +408,13 @@ button:disabled {
   overflow: auto;
 }
 
+.scoreboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .score {
   font-weight: 700;
 }
@@ -466,6 +483,10 @@ button:disabled {
   width: min(420px, 92vw);
 }
 
+.leave-confirm-modal {
+  border-color: rgba(244, 63, 94, 0.45);
+}
+
 @media (max-width: 960px) {
   .game {
     grid-template-columns: 1fr;
@@ -483,5 +504,10 @@ button:disabled {
 
   .claim-input {
     flex-direction: column;
+  }
+
+  .scoreboard-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
