@@ -543,6 +543,49 @@ button:disabled {
   line-height: 1.35;
 }
 
+.practice-puzzle-timer {
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  background: rgba(56, 189, 248, 0.14);
+  border-radius: 12px;
+  padding: 0.6rem 0.75rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.practice-puzzle-timer.warning {
+  border-color: rgba(251, 191, 36, 0.72);
+  background: rgba(251, 191, 36, 0.16);
+}
+
+.practice-puzzle-timer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+  font-size: 0.9rem;
+}
+
+.practice-puzzle-timer-track {
+  height: 8px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.practice-puzzle-timer-progress {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #38bdf8, #22c55e);
+  transition: width 0.2s linear;
+}
+
+.practice-puzzle-timer.warning .practice-puzzle-timer-progress {
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+}
+
 .game-board {
   min-height: 60vh;
 }
@@ -947,6 +990,36 @@ button:disabled {
 .practice-start-difficulty-picker {
   display: flex;
   justify-content: center;
+}
+
+.practice-start-timer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.practice-start-timer-toggle input {
+  width: auto;
+}
+
+.practice-start-timer-seconds {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.practice-start-timer-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.practice-start-timer-input-row input[type="range"] {
+  flex: 1;
+}
+
+.practice-start-timer-input-row input[type="number"] {
+  width: 6rem;
 }
 
 .game-log {

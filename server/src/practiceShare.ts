@@ -19,6 +19,9 @@ const MIN_SHARED_EXISTING_WORD_LENGTH = 4;
 const MAX_SHARED_EXISTING_WORD_LENGTH = 16;
 const MAX_SHARED_TOTAL_CHARACTERS = 96;
 const INVALID_SHARED_PUZZLE_MESSAGE = "Custom puzzle is invalid or has no valid plays.";
+export const MIN_PRACTICE_TIMER_SECONDS = 10;
+export const MAX_PRACTICE_TIMER_SECONDS = 120;
+export const DEFAULT_PRACTICE_TIMER_SECONDS = 60;
 
 type ResolvePracticeStartDependencies = {
   generatePuzzle: (difficulty: PracticeDifficulty) => PracticePuzzle;
@@ -30,6 +33,8 @@ type ResolvePracticeStartSuccess = {
   difficulty: PracticeDifficulty;
   puzzle: PracticePuzzle;
   isShared: boolean;
+  timerEnabled: boolean;
+  timerSeconds: number;
 };
 
 type ResolvePracticeStartFailure = {
@@ -38,6 +43,16 @@ type ResolvePracticeStartFailure = {
 };
 
 export type ResolvedPracticeStart = ResolvePracticeStartSuccess | ResolvePracticeStartFailure;
+
+export function clampPracticeTimerSeconds(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_PRACTICE_TIMER_SECONDS;
+  }
+  const rounded = Math.round(value);
+  if (rounded <= MIN_PRACTICE_TIMER_SECONDS) return MIN_PRACTICE_TIMER_SECONDS;
+  if (rounded >= MAX_PRACTICE_TIMER_SECONDS) return MAX_PRACTICE_TIMER_SECONDS;
+  return rounded;
+}
 
 function normalizeSharedWord(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -121,6 +136,8 @@ export function resolvePracticeStartRequest(
   request: PracticeStartRequest | null | undefined,
   dependencies: ResolvePracticeStartDependencies
 ): ResolvedPracticeStart {
+  const timerEnabled = request?.timerEnabled === true;
+  const timerSeconds = clampPracticeTimerSeconds(request?.timerSeconds);
   const sharedPuzzle = request?.sharedPuzzle;
   if (sharedPuzzle !== undefined) {
     const materialized = materializeSharedPracticePuzzle(sharedPuzzle, dependencies.solvePuzzle);
@@ -134,7 +151,9 @@ export function resolvePracticeStartRequest(
       ok: true,
       difficulty: materialized.difficulty,
       puzzle: materialized.puzzle,
-      isShared: true
+      isShared: true,
+      timerEnabled,
+      timerSeconds
     };
   }
 
@@ -143,6 +162,8 @@ export function resolvePracticeStartRequest(
     ok: true,
     difficulty: resolvedDifficulty,
     puzzle: dependencies.generatePuzzle(resolvedDifficulty),
-    isShared: false
+    isShared: false,
+    timerEnabled,
+    timerSeconds
   };
 }

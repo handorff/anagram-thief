@@ -30,6 +30,7 @@ import {
   DEFAULT_PRACTICE_DIFFICULTY
 } from "./practice.js";
 import { resolvePracticeStartRequest, validateCustomPracticePuzzle } from "./practiceShare.js";
+import { createTimedOutPracticeResult } from "./practiceTimer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +43,9 @@ const MAX_FLIP_TIMER_SECONDS = 60;
 const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
+const DEFAULT_PRACTICE_TIMER_SECONDS = 60;
+const MIN_PRACTICE_TIMER_SECONDS = 10;
+const MAX_PRACTICE_TIMER_SECONDS = 120;
 const FLIP_REVEAL_MS = 1_000;
 const CLAIM_COOLDOWN_MS = 10_000;
 const MAX_PLAYERS = 8;
@@ -140,6 +144,8 @@ type SocketData = {
 
 type PracticeModeStateInternal = PracticeModeState & {
   puzzle: PracticePuzzle;
+  puzzleTimerTimeout?: NodeJS.Timeout;
+  puzzleTimerToken?: string;
 };
 
 const rooms = new Map<string, RoomState>();
@@ -158,6 +164,9 @@ function createInactivePracticeState(
     phase: "puzzle",
     currentDifficulty: difficulty,
     queuedDifficulty: difficulty,
+    timerEnabled: false,
+    timerSeconds: DEFAULT_PRACTICE_TIMER_SECONDS,
+    puzzleTimerEndsAt: null,
     puzzle: null,
     result: null
   };
@@ -168,11 +177,29 @@ function getPracticeStateForSession(sessionId: string): PracticeModeState {
   if (!existing) {
     return createInactivePracticeState();
   }
-  return existing;
+  return {
+    active: existing.active,
+    phase: existing.phase,
+    currentDifficulty: existing.currentDifficulty,
+    queuedDifficulty: existing.queuedDifficulty,
+    timerEnabled: existing.timerEnabled,
+    timerSeconds: existing.timerSeconds,
+    puzzleTimerEndsAt: existing.puzzleTimerEndsAt,
+    puzzle: existing.puzzle,
+    result: existing.result
+  };
 }
 
 function emitPracticeState(socket: Socket, sessionId: string) {
   socket.emit("practice:state", getPracticeStateForSession(sessionId));
+}
+
+function emitPracticeStateForSessionId(sessionId: string) {
+  const session = sessionsById.get(sessionId);
+  if (!session?.socketId) return;
+  const sessionSocket = io.sockets.sockets.get(session.socketId);
+  if (!sessionSocket) return;
+  emitPracticeState(sessionSocket, sessionId);
 }
 
 function sanitizeName(name: string): string {
@@ -199,6 +226,47 @@ function clampClaimTimerSeconds(value: unknown): number {
   }
   const rounded = Math.round(value);
   return Math.min(MAX_CLAIM_TIMER_SECONDS, Math.max(MIN_CLAIM_TIMER_SECONDS, rounded));
+}
+
+function clampPracticeTimerSeconds(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_PRACTICE_TIMER_SECONDS;
+  }
+  const rounded = Math.round(value);
+  return Math.min(MAX_PRACTICE_TIMER_SECONDS, Math.max(MIN_PRACTICE_TIMER_SECONDS, rounded));
+}
+
+function clearPracticePuzzleTimer(practiceState: PracticeModeStateInternal) {
+  if (practiceState.puzzleTimerTimeout) {
+    clearTimeout(practiceState.puzzleTimerTimeout);
+    practiceState.puzzleTimerTimeout = undefined;
+  }
+  practiceState.puzzleTimerToken = undefined;
+  practiceState.puzzleTimerEndsAt = null;
+}
+
+function startPracticePuzzleTimer(sessionId: string, practiceState: PracticeModeStateInternal) {
+  clearPracticePuzzleTimer(practiceState);
+  if (!practiceState.timerEnabled) return;
+  if (practiceState.phase !== "puzzle") return;
+
+  const token = randomUUID();
+  const timeoutMs = practiceState.timerSeconds * 1000;
+  practiceState.puzzleTimerToken = token;
+  practiceState.puzzleTimerEndsAt = Date.now() + timeoutMs;
+  practiceState.puzzleTimerTimeout = setTimeout(() => {
+    const currentPracticeState = practiceBySessionId.get(sessionId);
+    if (!currentPracticeState || !currentPracticeState.active) return;
+    if (currentPracticeState.phase !== "puzzle") return;
+    if (currentPracticeState.puzzleTimerToken !== token) return;
+
+    currentPracticeState.phase = "result";
+    currentPracticeState.result = createTimedOutPracticeResult(currentPracticeState.puzzle, (candidatePuzzle) =>
+      practiceEngine.solvePuzzle(candidatePuzzle)
+    );
+    clearPracticePuzzleTimer(currentPracticeState);
+    emitPracticeStateForSessionId(sessionId);
+  }, timeoutMs);
 }
 
 function emitError(socket: { emit: Function }, message: string, code?: string) {
@@ -827,16 +895,30 @@ io.on("connection", (socket) => {
       emitError(socket, startResolution.message);
       return;
     }
-    const { difficulty: resolvedDifficulty, puzzle } = startResolution;
+    const {
+      difficulty: resolvedDifficulty,
+      puzzle,
+      timerEnabled: resolvedTimerEnabled,
+      timerSeconds: resolvedTimerSeconds
+    } = startResolution;
+
+    const existingPracticeState = practiceBySessionId.get(currentSession.sessionId);
+    if (existingPracticeState) {
+      clearPracticePuzzleTimer(existingPracticeState);
+    }
     const nextState: PracticeModeStateInternal = {
       active: true,
       phase: "puzzle",
       currentDifficulty: resolvedDifficulty,
       queuedDifficulty: resolvedDifficulty,
+      timerEnabled: resolvedTimerEnabled,
+      timerSeconds: clampPracticeTimerSeconds(resolvedTimerSeconds),
+      puzzleTimerEndsAt: null,
       puzzle,
       result: null
     };
     practiceBySessionId.set(currentSession.sessionId, nextState);
+    startPracticePuzzleTimer(currentSession.sessionId, nextState);
     emitPracticeState(socket, currentSession.sessionId);
   });
 
@@ -876,11 +958,13 @@ io.on("connection", (socket) => {
     const practiceState = practiceBySessionId.get(sessionId);
     if (!practiceState || !practiceState.active) return false;
 
+    clearPracticePuzzleTimer(practiceState);
     const nextDifficulty = practiceState.queuedDifficulty;
     practiceState.currentDifficulty = nextDifficulty;
     practiceState.phase = "puzzle";
     practiceState.puzzle = practiceEngine.generatePuzzle(nextDifficulty);
     practiceState.result = null;
+    startPracticePuzzleTimer(sessionId, practiceState);
     return true;
   }
 
@@ -903,6 +987,7 @@ io.on("connection", (socket) => {
       emitError(socket, result.invalidReason ?? "Word is not valid.");
       return;
     }
+    clearPracticePuzzleTimer(practiceState);
     practiceState.phase = "result";
     practiceState.result = result;
     emitPracticeState(socket, currentSession.sessionId);
@@ -939,6 +1024,10 @@ io.on("connection", (socket) => {
     if (!currentSession) {
       emitError(socket, "Session not found.");
       return;
+    }
+    const practiceState = practiceBySessionId.get(currentSession.sessionId);
+    if (practiceState) {
+      clearPracticePuzzleTimer(practiceState);
     }
     practiceBySessionId.delete(currentSession.sessionId);
     emitPracticeState(socket, currentSession.sessionId);

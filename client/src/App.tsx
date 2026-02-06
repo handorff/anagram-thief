@@ -175,6 +175,10 @@ const MAX_FLIP_TIMER_SECONDS = 60;
 const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
+const DEFAULT_PRACTICE_TIMER_SECONDS = 60;
+const MIN_PRACTICE_TIMER_SECONDS = 10;
+const MAX_PRACTICE_TIMER_SECONDS = 120;
+const PRACTICE_TIMER_WARNING_SECONDS = 5;
 const DEFAULT_FLIP_REVEAL_MS = 1_000;
 const CLAIM_WORD_ANIMATION_MS = 1_100;
 const MAX_LOG_ENTRIES = 300;
@@ -202,6 +206,9 @@ function createInactivePracticeState(
     phase: "puzzle",
     currentDifficulty: difficulty,
     queuedDifficulty: difficulty,
+    timerEnabled: false,
+    timerSeconds: DEFAULT_PRACTICE_TIMER_SECONDS,
+    puzzleTimerEndsAt: null,
     puzzle: null,
     result: null
   };
@@ -262,6 +269,12 @@ function clampPracticeDifficulty(value: number): PracticeDifficulty {
   if (rounded <= 1) return 1;
   if (rounded >= 5) return 5;
   return rounded as PracticeDifficulty;
+}
+
+function clampPracticeTimerSeconds(value: number): number {
+  const rounded = Math.round(value);
+  if (Number.isNaN(rounded)) return DEFAULT_PRACTICE_TIMER_SECONDS;
+  return Math.min(MAX_PRACTICE_TIMER_SECONDS, Math.max(MIN_PRACTICE_TIMER_SECONDS, rounded));
 }
 
 function formatLogTime(timestamp: number) {
@@ -375,6 +388,8 @@ export default function App() {
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
   const [showPracticeStartPrompt, setShowPracticeStartPrompt] = useState(false);
   const [practiceStartDifficulty, setPracticeStartDifficulty] = useState<PracticeDifficulty | null>(null);
+  const [practiceStartTimerEnabled, setPracticeStartTimerEnabled] = useState(false);
+  const [practiceStartTimerSeconds, setPracticeStartTimerSeconds] = useState(DEFAULT_PRACTICE_TIMER_SECONDS);
   const [editorDifficulty, setEditorDifficulty] = useState<PracticeDifficulty>(DEFAULT_PRACTICE_DIFFICULTY);
   const [editorCenterInput, setEditorCenterInput] = useState("");
   const [editorExistingWordsInput, setEditorExistingWordsInput] = useState("");
@@ -673,6 +688,27 @@ export default function App() {
   const isInPractice = !roomState && practiceState.active;
   const practicePuzzle = practiceState.puzzle;
   const practiceResult = practiceState.result;
+  const practiceTimerRemainingMs = useMemo(() => {
+    if (!practiceState.active) return null;
+    if (practiceState.phase !== "puzzle") return null;
+    if (!practiceState.timerEnabled) return null;
+    if (!practiceState.puzzleTimerEndsAt) return null;
+    return Math.max(0, practiceState.puzzleTimerEndsAt - now);
+  }, [
+    practiceState.active,
+    practiceState.phase,
+    practiceState.timerEnabled,
+    practiceState.puzzleTimerEndsAt,
+    now
+  ]);
+  const practiceTimerRemainingSeconds =
+    practiceTimerRemainingMs === null ? null : Math.max(0, Math.ceil(practiceTimerRemainingMs / 1000));
+  const practiceTimerProgress =
+    practiceTimerRemainingMs === null
+      ? 0
+      : Math.max(0, Math.min(1, practiceTimerRemainingMs / (practiceState.timerSeconds * 1000)));
+  const isPracticeTimerWarning =
+    practiceTimerRemainingSeconds !== null && practiceTimerRemainingSeconds <= PRACTICE_TIMER_WARNING_SECONDS;
   const practiceResultCategory = useMemo(
     () => (practiceResult ? getPracticeResultCategory(practiceResult) : null),
     [practiceResult]
@@ -896,6 +932,8 @@ export default function App() {
     if (roomState) return;
     setLobbyError(null);
     setPracticeStartDifficulty(null);
+    setPracticeStartTimerEnabled(false);
+    setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
     setShowPracticeStartPrompt(true);
     setLobbyView("list");
   };
@@ -904,15 +942,21 @@ export default function App() {
     if (practiceStartDifficulty === null) return;
     setLobbyError(null);
     socket.emit("practice:start", {
-      difficulty: practiceStartDifficulty
+      difficulty: practiceStartDifficulty,
+      timerEnabled: practiceStartTimerEnabled,
+      timerSeconds: clampPracticeTimerSeconds(practiceStartTimerSeconds)
     });
     setShowPracticeStartPrompt(false);
     setPracticeStartDifficulty(null);
+    setPracticeStartTimerEnabled(false);
+    setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
   };
 
   const handleCancelPracticeStart = () => {
     setShowPracticeStartPrompt(false);
     setPracticeStartDifficulty(null);
+    setPracticeStartTimerEnabled(false);
+    setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
   };
 
   const handleOpenPracticeEditor = () => {
@@ -929,7 +973,8 @@ export default function App() {
     setEditorValidationMessageFromServer(null);
     socket.emit("practice:start", {
       difficulty: editorPuzzleDraft.payload.d,
-      sharedPuzzle: editorPuzzleDraft.payload
+      sharedPuzzle: editorPuzzleDraft.payload,
+      timerEnabled: false
     });
   };
 
@@ -1042,6 +1087,7 @@ export default function App() {
 
   const handleSharePracticeResult = async () => {
     if (!practicePuzzle || !practiceResult || practiceState.phase !== "result") return;
+    if (practiceResult.timedOut || !practiceResult.submittedWordNormalized) return;
 
     try {
       const payload = buildPracticeResultSharePayload(
@@ -1187,7 +1233,10 @@ export default function App() {
     } else {
       setPendingResultAutoSubmit(null);
     }
-    socket.emit("practice:start", { sharedPuzzle: pendingSharedLaunch.payload });
+    socket.emit("practice:start", {
+      sharedPuzzle: pendingSharedLaunch.payload,
+      timerEnabled: false
+    });
     setPendingSharedLaunch(null);
     removePracticeShareFromUrl();
   }, [pendingSharedLaunch, isConnected, roomState]);
@@ -1241,6 +1290,8 @@ export default function App() {
     if (!practiceState.active) return;
     setShowPracticeStartPrompt(false);
     setPracticeStartDifficulty(null);
+    setPracticeStartTimerEnabled(false);
+    setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
   }, [practiceState.active]);
 
   useEffect(() => {
@@ -1785,7 +1836,11 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {practicePuzzle && practiceState.phase === "result" && practiceResult && (
+                {practicePuzzle &&
+                  practiceState.phase === "result" &&
+                  practiceResult &&
+                  !practiceResult.timedOut &&
+                  practiceResult.submittedWordNormalized && (
                   <div className="practice-share-action">
                     <button className="button-secondary" type="button" onClick={handleSharePracticeResult}>
                       {practiceResultShareStatus === "copied"
@@ -1869,6 +1924,27 @@ export default function App() {
 
                   {practiceState.phase === "puzzle" && (
                     <>
+                      {practiceTimerRemainingSeconds !== null && (
+                        <div
+                          className={`practice-puzzle-timer ${isPracticeTimerWarning ? "warning" : ""}`}
+                          role="progressbar"
+                          aria-label="Practice puzzle timer"
+                          aria-valuemin={0}
+                          aria-valuemax={practiceState.timerSeconds}
+                          aria-valuenow={practiceTimerRemainingSeconds}
+                        >
+                          <div className="practice-puzzle-timer-header">
+                            <span>Time remaining</span>
+                            <strong>{practiceTimerRemainingSeconds}s</strong>
+                          </div>
+                          <div className="practice-puzzle-timer-track">
+                            <div
+                              className="practice-puzzle-timer-progress"
+                              style={{ width: `${practiceTimerProgress * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div className="claim-box">
                         <div className="claim-input">
                           <input
@@ -1925,7 +2001,11 @@ export default function App() {
                           )}
                         </div>
                         <p>
-                          <strong>{practiceResult.submittedWordNormalized || "(empty)"}</strong>{" "}
+                          <strong>
+                            {practiceResult.timedOut
+                              ? "Time's up"
+                              : practiceResult.submittedWordNormalized || "(empty)"}
+                          </strong>{" "}
                           ({practiceResult.score}/{practiceResult.bestScore})
                         </p>
                       </div>
@@ -2216,8 +2296,8 @@ export default function App() {
       {showPracticeStartPrompt && !practiceState.active && !roomState && (
         <div className="join-overlay">
           <div className="panel join-modal practice-start-modal">
-            <h2>Choose practice difficulty</h2>
-            <p className="muted">Pick a difficulty before starting your first puzzle.</p>
+            <h2>Start Practice Mode</h2>
+            <p className="muted">Choose difficulty and optional puzzle timer settings.</p>
             <div className="practice-start-difficulty-picker" role="group" aria-label="Practice difficulty">
               <div className="practice-difficulty-segmented">
                 {[1, 2, 3, 4, 5].map((level) => (
@@ -2237,6 +2317,41 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <label className="practice-start-timer-toggle">
+              <input
+                type="checkbox"
+                checked={practiceStartTimerEnabled}
+                onChange={(event) => setPracticeStartTimerEnabled(event.target.checked)}
+              />
+              <span>Enable puzzle timer</span>
+            </label>
+            <label className="practice-start-timer-seconds">
+              <span>
+                Timer seconds ({MIN_PRACTICE_TIMER_SECONDS}-{MAX_PRACTICE_TIMER_SECONDS})
+              </span>
+              <div className="practice-start-timer-input-row">
+                <input
+                  type="range"
+                  min={MIN_PRACTICE_TIMER_SECONDS}
+                  max={MAX_PRACTICE_TIMER_SECONDS}
+                  step={1}
+                  value={practiceStartTimerSeconds}
+                  disabled={!practiceStartTimerEnabled}
+                  onChange={(event) => setPracticeStartTimerSeconds(clampPracticeTimerSeconds(Number(event.target.value)))}
+                />
+                <input
+                  type="number"
+                  min={MIN_PRACTICE_TIMER_SECONDS}
+                  max={MAX_PRACTICE_TIMER_SECONDS}
+                  value={practiceStartTimerSeconds}
+                  disabled={!practiceStartTimerEnabled}
+                  onChange={(event) => setPracticeStartTimerSeconds(clampPracticeTimerSeconds(Number(event.target.value)))}
+                  onBlur={() =>
+                    setPracticeStartTimerSeconds((current) => clampPracticeTimerSeconds(current))
+                  }
+                />
+              </div>
+            </label>
             <div className="button-row">
               <button className="button-secondary" onClick={handleCancelPracticeStart}>
                 Cancel

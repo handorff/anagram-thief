@@ -73,6 +73,7 @@ test("evaluateSubmission treats tied top score as best play", () => {
   const result = engine.evaluateSubmission(puzzle, "team");
 
   assert.equal(result.isValid, true);
+  assert.equal(result.timedOut, false);
   assert.equal(result.score, 4);
   assert.equal(result.isBestPlay, true);
   assert.equal(result.bestScore, 4);
@@ -85,19 +86,23 @@ test("evaluateSubmission returns specific invalid reasons", () => {
 
   const empty = engine.evaluateSubmission(puzzle, "   ");
   assert.equal(empty.isValid, false);
+  assert.equal(empty.timedOut, false);
   assert.equal(empty.score, 0);
   assert.equal(empty.invalidReason, "Enter a word to submit.");
 
   const nonAlpha = engine.evaluateSubmission(puzzle, "TE4M");
   assert.equal(nonAlpha.isValid, false);
+  assert.equal(nonAlpha.timedOut, false);
   assert.equal(nonAlpha.invalidReason, "Word must contain only letters A-Z.");
 
   const notInDictionary = engine.evaluateSubmission(puzzle, "ZZZZ");
   assert.equal(notInDictionary.isValid, false);
+  assert.equal(notInDictionary.timedOut, false);
   assert.equal(notInDictionary.invalidReason, "Word is not in the dictionary.");
 
   const notClaimable = engine.evaluateSubmission(puzzle, "TIGER");
   assert.equal(notClaimable.isValid, false);
+  assert.equal(notClaimable.timedOut, false);
   assert.equal(notClaimable.invalidReason, "Word cannot be claimed from this puzzle.");
 });
 

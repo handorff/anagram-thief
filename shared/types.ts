@@ -107,6 +107,8 @@ export interface PracticeResultSharePayload {
 export interface PracticeStartRequest {
   difficulty?: PracticeDifficulty;
   sharedPuzzle?: PracticeSharePayload;
+  timerEnabled?: boolean;
+  timerSeconds?: number;
 }
 
 export interface PracticeValidateCustomRequest {
@@ -132,6 +134,7 @@ export interface PracticeResult {
   submittedWordNormalized: string;
   isValid: boolean;
   isBestPlay: boolean;
+  timedOut: boolean;
   score: number;
   invalidReason?: string;
   bestScore: number;
@@ -143,6 +146,9 @@ export interface PracticeModeState {
   phase: "puzzle" | "result";
   currentDifficulty: PracticeDifficulty;
   queuedDifficulty: PracticeDifficulty;
+  timerEnabled: boolean;
+  timerSeconds: number;
+  puzzleTimerEndsAt: number | null;
   puzzle: PracticePuzzle | null;
   result: PracticeResult | null;
 }

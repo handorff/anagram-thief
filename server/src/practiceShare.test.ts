@@ -178,6 +178,8 @@ test("resolvePracticeStartRequest uses shared puzzle for practice:start payload"
   }
   assert.equal(resolved.isShared, true);
   assert.equal(resolved.difficulty, 4);
+  assert.equal(resolved.timerEnabled, false);
+  assert.equal(resolved.timerSeconds, 60);
   assert.equal(generatedCalls, 0);
   assert.deepEqual(
     resolved.puzzle.centerTiles.map((tile) => tile.letter),
@@ -244,7 +246,81 @@ test("resolvePracticeStartRequest still generates random puzzle when no shared p
   assert.equal(generatedCalls, 1);
   assert.equal(resolved.isShared, false);
   assert.equal(resolved.difficulty, 5);
+  assert.equal(resolved.timerEnabled, false);
+  assert.equal(resolved.timerSeconds, 60);
   assert.equal(resolved.puzzle, generatedPuzzle);
+});
+
+test("resolvePracticeStartRequest resolves timer defaults and bounds", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+  const generatedPuzzle = buildPuzzle("TEAM", []);
+
+  const withDefaults = resolvePracticeStartRequest(
+    { difficulty: 3 },
+    {
+      generatePuzzle: () => generatedPuzzle,
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+  assert.equal(withDefaults.ok, true);
+  if (!withDefaults.ok) {
+    assert.fail("Expected default timer settings to resolve.");
+  }
+  assert.equal(withDefaults.timerEnabled, false);
+  assert.equal(withDefaults.timerSeconds, 60);
+
+  const withLowSeconds = resolvePracticeStartRequest(
+    { difficulty: 3, timerEnabled: true, timerSeconds: 2 },
+    {
+      generatePuzzle: () => generatedPuzzle,
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+  assert.equal(withLowSeconds.ok, true);
+  if (!withLowSeconds.ok) {
+    assert.fail("Expected low timer seconds to clamp.");
+  }
+  assert.equal(withLowSeconds.timerEnabled, true);
+  assert.equal(withLowSeconds.timerSeconds, 10);
+
+  const withHighSeconds = resolvePracticeStartRequest(
+    { difficulty: 3, timerEnabled: true, timerSeconds: 500 },
+    {
+      generatePuzzle: () => generatedPuzzle,
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+  assert.equal(withHighSeconds.ok, true);
+  if (!withHighSeconds.ok) {
+    assert.fail("Expected high timer seconds to clamp.");
+  }
+  assert.equal(withHighSeconds.timerEnabled, true);
+  assert.equal(withHighSeconds.timerSeconds, 120);
+});
+
+test("resolvePracticeStartRequest handles invalid timer values safely", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+  const generatedPuzzle = buildPuzzle("TEAM", []);
+
+  const resolved = resolvePracticeStartRequest(
+    {
+      difficulty: 3,
+      timerEnabled: "yes" as unknown as boolean,
+      timerSeconds: "wat" as unknown as number
+    },
+    {
+      generatePuzzle: () => generatedPuzzle,
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+  assert.equal(resolved.ok, true);
+  if (!resolved.ok) {
+    assert.fail("Expected invalid timer values to fall back.");
+  }
+  assert.equal(resolved.timerEnabled, false);
+  assert.equal(resolved.timerSeconds, 60);
 });
 
 test("validateCustomPracticePuzzle returns explicit validation responses", () => {
