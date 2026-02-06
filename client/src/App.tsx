@@ -23,6 +23,14 @@ import {
   decodePracticeResultSharePayload,
   encodePracticeResultSharePayload
 } from "@shared/practiceResultShare";
+import {
+  buildUserSettingsContextValue,
+  persistUserSettings,
+  readStoredUserSettings,
+  UserSettingsContext,
+  useUserSettings,
+  type UserSettings
+} from "./userSettings";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const SESSION_STORAGE_KEY = "anagram.sessionId";
@@ -397,7 +405,9 @@ export default function App() {
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
   const [editNameDraft, setEditNameDraft] = useState("");
-  const [isEditingName, setIsEditingName] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [userSettings, setUserSettings] = useState<UserSettings>(() => readStoredUserSettings());
+  const [userSettingsDraft, setUserSettingsDraft] = useState<UserSettings>(() => readStoredUserSettings());
   const [lobbyView, setLobbyView] = useState<"list" | "create" | "editor">("list");
   const [lobbyError, setLobbyError] = useState<string | null>(null);
   const [joinPrompt, setJoinPrompt] = useState<{ roomId: string; roomName: string } | null>(null);
@@ -424,6 +434,7 @@ export default function App() {
   const [isEditorShareValidationInFlight, setIsEditorShareValidationInFlight] = useState(false);
 
   const [claimWord, setClaimWord] = useState("");
+  const [queuedTileClaimLetters, setQueuedTileClaimLetters] = useState("");
   const [preStealTriggerInput, setPreStealTriggerInput] = useState("");
   const [preStealClaimWordInput, setPreStealClaimWordInput] = useState("");
   const [preStealDraggedEntryId, setPreStealDraggedEntryId] = useState<string | null>(null);
@@ -636,6 +647,11 @@ export default function App() {
   }, [gameState]);
 
   const lobbyRooms = useMemo(() => roomList.filter((room) => room.status === "lobby"), [roomList]);
+  const userSettingsContextValue = useMemo(
+    () => buildUserSettingsContextValue(userSettings),
+    [userSettings]
+  );
+  const isTileInputMethodEnabled = userSettingsContextValue.isTileInputMethodEnabled;
 
   const endTimerRemaining = useMemo(() => {
     if (!gameState?.endTimerEndsAt) return null;
@@ -696,7 +712,9 @@ export default function App() {
     if (isClaimCooldownActive && claimCooldownRemainingSeconds !== null) {
       return `Cooldown: ${claimCooldownRemainingSeconds}s or next flip.`;
     }
-    return "Press enter to claim a word";
+    return isTileInputMethodEnabled
+      ? "Click or tap tiles to build a claim"
+      : "Press enter to claim a word";
   }, [
     isFlipRevealActive,
     flipRevealPlayerName,
@@ -705,7 +723,8 @@ export default function App() {
     isMyClaimWindow,
     claimWindowPlayerName,
     isClaimCooldownActive,
-    claimCooldownRemainingSeconds
+    claimCooldownRemainingSeconds,
+    isTileInputMethodEnabled
   ]);
   const claimPlaceholder = claimStatus;
   const claimButtonLabel = isMyClaimWindow ? "Submit Claim" : "Start Claim";
@@ -1152,6 +1171,7 @@ export default function App() {
     setRoomState(null);
     setGameState(null);
     setGameLogEntries([]);
+    setQueuedTileClaimLetters("");
     clearClaimWordHighlights();
     previousGameStateRef.current = null;
     lastClaimFailureRef.current = null;
@@ -1173,27 +1193,32 @@ export default function App() {
 
   const roomId = roomState?.id ?? null;
 
-  const handleStartEditName = () => {
+  const handleOpenSettings = useCallback(() => {
     setEditNameDraft(playerName);
-    setIsEditingName(true);
-  };
+    setUserSettingsDraft(userSettings);
+    setIsSettingsOpen(true);
+  }, [playerName, userSettings]);
 
-  const handleSaveEditName = () => {
+  const handleCloseSettings = useCallback(() => {
+    setEditNameDraft(playerName);
+    setUserSettingsDraft(userSettings);
+    setIsSettingsOpen(false);
+  }, [playerName, userSettings]);
+
+  const handleSaveSettings = useCallback(() => {
     const resolvedName = sanitizeClientName(editNameDraft);
     setPlayerName(resolvedName);
     setNameDraft(resolvedName);
-    setIsEditingName(false);
+    setEditNameDraft(resolvedName);
     persistPlayerName(resolvedName);
     socket.emit("session:update-name", { name: resolvedName });
     if (roomId) {
       socket.emit("player:update-name", { name: resolvedName });
     }
-  };
-
-  const handleCancelEditName = () => {
-    setEditNameDraft(playerName);
-    setIsEditingName(false);
-  };
+    setUserSettings(userSettingsDraft);
+    persistUserSettings(userSettingsDraft);
+    setIsSettingsOpen(false);
+  }, [editNameDraft, roomId, userSettingsDraft]);
 
   const handleFlip = useCallback(() => {
     if (!roomId) return;
@@ -1208,6 +1233,34 @@ export default function App() {
     claimInputRef.current?.focus();
     socket.emit("game:claim-intent", { roomId });
   }, [roomId, isFlipRevealActive, claimWindow, isClaimCooldownActive]);
+
+  const handleClaimTileSelect = useCallback(
+    (letter: string) => {
+      if (!roomId) return;
+      if (!isTileInputMethodEnabled) return;
+      const normalizedLetter = normalizeEditorText(letter).slice(0, 1);
+      if (!normalizedLetter) return;
+
+      if (isMyClaimWindow) {
+        setClaimWord((current) => `${current}${normalizedLetter}`);
+        requestAnimationFrame(() => claimInputRef.current?.focus());
+        return;
+      }
+
+      if (claimWindow || isClaimCooldownActive || isFlipRevealActive) return;
+      setQueuedTileClaimLetters((current) => `${current}${normalizedLetter}`);
+      handleClaimIntent();
+    },
+    [
+      roomId,
+      isTileInputMethodEnabled,
+      isMyClaimWindow,
+      claimWindow,
+      isClaimCooldownActive,
+      isFlipRevealActive,
+      handleClaimIntent
+    ]
+  );
 
   const handleClaimSubmit = useCallback(() => {
     if (!roomState) return;
@@ -1279,6 +1332,39 @@ export default function App() {
     }
     requestAnimationFrame(() => claimInputRef.current?.focus());
   }, [isMyClaimWindow]);
+
+  useEffect(() => {
+    if (!isMyClaimWindow) return;
+    if (!queuedTileClaimLetters) return;
+    setClaimWord((current) => `${current}${queuedTileClaimLetters}`);
+    setQueuedTileClaimLetters("");
+    requestAnimationFrame(() => claimInputRef.current?.focus());
+  }, [isMyClaimWindow, queuedTileClaimLetters]);
+
+  useEffect(() => {
+    if (isMyClaimWindow) return;
+    if (!queuedTileClaimLetters) return;
+    if (claimWindow || isClaimCooldownActive || isFlipRevealActive) {
+      setQueuedTileClaimLetters("");
+    }
+  }, [
+    isMyClaimWindow,
+    queuedTileClaimLetters,
+    claimWindow,
+    isClaimCooldownActive,
+    isFlipRevealActive
+  ]);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      handleCloseSettings();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isSettingsOpen, handleCloseSettings]);
 
   useEffect(() => {
     if (!practiceState.active) {
@@ -1372,6 +1458,7 @@ export default function App() {
 
   useEffect(() => {
     if (roomState) return;
+    setQueuedTileClaimLetters("");
     setPreStealTriggerInput("");
     setPreStealClaimWordInput("");
     setPreStealDraggedEntryId(null);
@@ -1653,57 +1740,25 @@ export default function App() {
   const pageClassName = shouldShowGameLog ? "page has-game-log" : "page";
 
   return (
-    <div className={pageClassName}>
-      <header className="header">
-        <div>
-          <h1>Anagram Thief</h1>
-        </div>
-        <div className="status">
-          <div className="status-identity">
-            {isEditingName ? (
-              <>
-                <input
-                  className="status-name-input"
-                  value={editNameDraft}
-                  onChange={(event) => setEditNameDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                      event.preventDefault();
-                      handleSaveEditName();
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      handleCancelEditName();
-                    }
-                  }}
-                  aria-label="Edit display name"
-                />
-                <button
-                  className="status-button"
-                  onClick={handleSaveEditName}
-                  disabled={!editNameDraft.trim()}
-                >
-                  Save
-                </button>
-                <button className="status-button ghost" onClick={handleCancelEditName}>
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="status-name">{playerName}</span>
-                <button className="icon-button" onClick={handleStartEditName} aria-label="Edit name">
-                  ✎
-                </button>
-              </>
-            )}
+    <UserSettingsContext.Provider value={userSettingsContextValue}>
+      <div className={pageClassName}>
+        <header className="header">
+          <div>
+            <h1>Anagram Thief</h1>
           </div>
-          <div className="status-connection">
-            <span className={isConnected ? "dot online" : "dot"} />
-            {isConnected ? "Connected" : "Connecting"}
+          <div className="status">
+            <div className="status-identity">
+              <span className="status-name">{playerName}</span>
+              <button className="icon-button" onClick={handleOpenSettings} aria-label="Open settings">
+                ⚙
+              </button>
+            </div>
+            <div className="status-connection">
+              <span className={isConnected ? "dot online" : "dot"} />
+              {isConnected ? "Connected" : "Connecting"}
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
       {!roomState && !practiceState.active && lobbyView === "list" && (
         <div className="grid">
@@ -2192,7 +2247,7 @@ export default function App() {
             <h2>How to Play</h2>
             <ul>
               <li>Flip one tile on your turn.</li>
-              <li>Press Enter to start a claim using center tiles.</li>
+              <li>Start claims with Enter, or switch to tile input in Settings.</li>
               <li>Steals are automatic when possible.</li>
               <li>Steals must rearrange letters (no substring extensions).</li>
               <li>Game ends 60s after bag is empty.</li>
@@ -2235,7 +2290,29 @@ export default function App() {
                 <div className="muted">No tiles flipped yet.</div>
               )}
               {gameState.centerTiles.map((tile) => (
-                <div key={tile.id} className="tile">
+                <div
+                  key={tile.id}
+                  className={isTileInputMethodEnabled ? "tile tile-selectable" : "tile"}
+                  role={isTileInputMethodEnabled ? "button" : undefined}
+                  tabIndex={isTileInputMethodEnabled ? 0 : undefined}
+                  onClick={
+                    isTileInputMethodEnabled ? () => handleClaimTileSelect(tile.letter) : undefined
+                  }
+                  onKeyDown={
+                    isTileInputMethodEnabled
+                      ? (event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            handleClaimTileSelect(tile.letter);
+                          }
+                        }
+                      : undefined
+                  }
+                  aria-label={
+                    isTileInputMethodEnabled ? `Use letter ${tile.letter} for claim` : undefined
+                  }
+                >
                   {tile.letter}
                 </div>
               ))}
@@ -2407,6 +2484,7 @@ export default function App() {
                   key={player.id}
                   player={player}
                   highlightedWordIds={claimedWordHighlights}
+                  onTileLetterSelect={handleClaimTileSelect}
                 />
               ))}
             </div>
@@ -2566,6 +2644,55 @@ export default function App() {
         </div>
       )}
 
+      {isSettingsOpen && (
+        <div className="join-overlay">
+          <div className="panel join-modal settings-modal" role="dialog" aria-modal="true">
+            <h2>Settings</h2>
+            <label>
+              Display name
+              <input
+                value={editNameDraft}
+                onChange={(event) => setEditNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    handleSaveSettings();
+                  }
+                }}
+                placeholder="Player name"
+                autoFocus
+              />
+            </label>
+            <div className="settings-section">
+              <span>Input method</span>
+              <label className="settings-option">
+                <input
+                  type="checkbox"
+                  checked={userSettingsDraft.inputMethod === "tile"}
+                  onChange={(event) =>
+                    setUserSettingsDraft((current) => ({
+                      ...current,
+                      inputMethod: event.target.checked ? "tile" : "typing"
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Enable click/tap letter tiles</strong>
+                </span>
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="button-secondary" onClick={handleCloseSettings}>
+                Cancel
+              </button>
+              <button onClick={handleSaveSettings} disabled={!editNameDraft.trim()}>
+                Save settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showLeaveGameConfirm && (
         <div className="join-overlay">
           <div className="panel join-modal leave-confirm-modal">
@@ -2584,17 +2711,22 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </UserSettingsContext.Provider>
   );
 }
 
 function WordList({
   player,
-  highlightedWordIds
+  highlightedWordIds,
+  onTileLetterSelect
 }: {
   player: Player;
   highlightedWordIds: Record<string, WordHighlightKind>;
+  onTileLetterSelect: (letter: string) => void;
 }) {
+  const { isTileInputMethodEnabled } = useUserSettings();
+
   return (
     <div className="word-list">
       <div className="word-header">
@@ -2606,7 +2738,31 @@ function WordList({
         <div key={word.id} className={getWordItemClassName(highlightedWordIds[word.id])}>
           <div className="word-tiles" aria-label={word.text}>
             {word.text.split("").map((letter, index) => (
-              <div key={`${word.id}-${index}`} className="tile word-tile">
+              <div
+                key={`${word.id}-${index}`}
+                className={isTileInputMethodEnabled ? "tile word-tile tile-selectable" : "tile word-tile"}
+                role={isTileInputMethodEnabled ? "button" : undefined}
+                tabIndex={isTileInputMethodEnabled ? 0 : undefined}
+                onClick={
+                  isTileInputMethodEnabled ? () => onTileLetterSelect(letter.toUpperCase()) : undefined
+                }
+                onKeyDown={
+                  isTileInputMethodEnabled
+                    ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onTileLetterSelect(letter.toUpperCase());
+                        }
+                      }
+                    : undefined
+                }
+                aria-label={
+                  isTileInputMethodEnabled
+                    ? `Use letter ${letter.toUpperCase()} from ${player.name}'s word`
+                    : undefined
+                }
+              >
                 {letter.toUpperCase()}
               </div>
             ))}

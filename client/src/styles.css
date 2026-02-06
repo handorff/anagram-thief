@@ -631,6 +631,23 @@ button:disabled {
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.4);
 }
 
+.tile-selectable {
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.tile-selectable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.5);
+}
+
+.tile-selectable:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.9);
+  outline-offset: 2px;
+}
+
 .tile-reveal-card {
   font-size: 1.5rem;
   font-weight: 800;
@@ -1054,6 +1071,35 @@ button:disabled {
 
 .join-modal {
   width: min(420px, 92vw);
+}
+
+.settings-modal {
+  width: min(460px, 94vw);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.settings-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.settings-option input {
+  width: auto;
+  margin-top: 0.2rem;
+}
+
+.settings-option strong {
+  display: block;
 }
 
 .leave-confirm-modal {
