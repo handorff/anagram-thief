@@ -1266,12 +1266,12 @@ io.on("connection", (socket) => {
               selectedTiles,
               requiredTotal
             };
+            if (normalized.includes(target.text)) {
+              continue;
+            }
             if (owner.id === player.id) {
               extendCandidates.push(candidate);
             } else {
-              if (normalized.includes(target.text)) {
-                continue;
-              }
               stealCandidates.push(candidate);
             }
           }
