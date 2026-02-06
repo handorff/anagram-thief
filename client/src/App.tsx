@@ -366,7 +366,7 @@ export default function App() {
   const isClaimButtonDisabled = isMyClaimWindow
     ? !claimWord.trim()
     : Boolean(claimWindow) || isClaimCooldownActive;
-  const isClaimInputDisabled = (Boolean(claimWindow) && !isMyClaimWindow) || isClaimCooldownActive;
+  const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive;
   const shouldShowGameLog =
     Boolean(gameState) && (roomState?.status === "in-game" || roomState?.status === "ended");
   const gameOverStandings = useMemo(() => {
@@ -662,6 +662,9 @@ export default function App() {
       const currentEndsAt = currentCooldowns[playerId];
       return typeof currentEndsAt === "number" && previousEndsAt !== currentEndsAt;
     });
+    const endedCooldownPlayerIds = Object.keys(previousCooldowns).filter(
+      (playerId) => !(playerId in currentCooldowns)
+    );
 
     const previousClaimWindow = previousState.claimWindow;
     let isClaimWindowExpired = false;
@@ -690,6 +693,11 @@ export default function App() {
 
       const cooldownPlayerName = getPlayerName(gameState.players, playerId);
       pendingEntries.push({ text: `${cooldownPlayerName} is on cooldown.`, kind: "event" });
+    }
+
+    for (const playerId of endedCooldownPlayerIds) {
+      const cooldownPlayerName = getPlayerName(gameState.players, playerId);
+      pendingEntries.push({ text: `${cooldownPlayerName} is off cooldown.`, kind: "event" });
     }
 
     if (previousState.bagCount > 0 && gameState.bagCount === 0 && gameState.endTimerEndsAt) {
