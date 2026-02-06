@@ -69,6 +69,44 @@ const MAX_FLIP_TIMER_SECONDS = 60;
 const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
+const COLLAPSED_LOG_LINES = 5;
+const MAX_LOG_ENTRIES = 300;
+const CLAIM_FAILURE_WINDOW_MS = 4_000;
+const CLAIM_FAILURE_MESSAGES = new Set([
+  "Claim window expired.",
+  "Enter a word to claim.",
+  "Word must contain only letters A-Z.",
+  "Word is not valid.",
+  "Not enough tiles in the center to make that word."
+]);
+
+type GameLogKind = "event" | "error";
+
+type GameLogEntry = {
+  id: string;
+  timestamp: number;
+  text: string;
+  kind: GameLogKind;
+};
+
+type WordSnapshot = {
+  id: string;
+  text: string;
+  tileIds: string[];
+  ownerId: string;
+  createdAt: number;
+};
+
+type PendingGameLogEntry = {
+  text: string;
+  kind: GameLogKind;
+  timestamp?: number;
+};
+
+type ClaimFailureContext = {
+  message: string;
+  at: number;
+};
 
 function clampFlipTimerSeconds(value: number) {
   const rounded = Math.round(value);
@@ -82,13 +120,60 @@ function clampClaimTimerSeconds(value: number) {
   return Math.min(MAX_CLAIM_TIMER_SECONDS, Math.max(MIN_CLAIM_TIMER_SECONDS, rounded));
 }
 
+function formatLogTime(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+}
+
+function getPlayerName(players: Player[], playerId: string | null | undefined) {
+  if (!playerId) return "Unknown";
+  return players.find((player) => player.id === playerId)?.name ?? "Unknown";
+}
+
+function getWordSnapshots(players: Player[]): WordSnapshot[] {
+  const snapshots: WordSnapshot[] = [];
+  for (const player of players) {
+    for (const word of player.words) {
+      snapshots.push({
+        id: word.id,
+        text: word.text,
+        tileIds: word.tileIds,
+        ownerId: player.id,
+        createdAt: word.createdAt
+      });
+    }
+  }
+  return snapshots;
+}
+
+function findReplacedWord(addedWord: WordSnapshot, removedWords: WordSnapshot[]) {
+  const matches = removedWords.filter((word) =>
+    word.tileIds.every((tileId) => addedWord.tileIds.includes(tileId))
+  );
+  if (matches.length === 0) return null;
+
+  matches.sort((a, b) => {
+    if (a.tileIds.length !== b.tileIds.length) {
+      return b.tileIds.length - a.tileIds.length;
+    }
+    return a.createdAt - b.createdAt;
+  });
+
+  return matches[0];
+}
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [selfPlayerId, setSelfPlayerId] = useState<string | null>(null);
   const [roomList, setRoomList] = useState<RoomSummary[]>([]);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
+  const [isLogExpanded, setIsLogExpanded] = useState(false);
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
@@ -109,13 +194,39 @@ export default function App() {
 
   const [claimWord, setClaimWord] = useState("");
   const claimInputRef = useRef<HTMLInputElement>(null);
+  const logScrollRef = useRef<HTMLDivElement>(null);
+  const previousGameStateRef = useRef<GameState | null>(null);
+  const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
+  const roomStatusRef = useRef<RoomState["status"] | null>(null);
+  const hasGameStateRef = useRef(false);
+  const previousRoomIdRef = useRef<string | null>(null);
 
   const [now, setNow] = useState(Date.now());
+
+  const appendGameLogEntries = useCallback((entries: PendingGameLogEntry[]) => {
+    if (entries.length === 0) return;
+    setGameLogEntries((current) => {
+      const nextEntries = entries.map((entry) => ({
+        id: generateId(),
+        timestamp: entry.timestamp ?? Date.now(),
+        text: entry.text,
+        kind: entry.kind
+      }));
+      const next = [...current, ...nextEntries];
+      if (next.length <= MAX_LOG_ENTRIES) return next;
+      return next.slice(next.length - MAX_LOG_ENTRIES);
+    });
+  }, []);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    roomStatusRef.current = roomState?.status ?? null;
+    hasGameStateRef.current = Boolean(gameState);
+  }, [roomState?.status, gameState]);
 
   useEffect(() => {
     const onConnect = () => {
@@ -126,7 +237,18 @@ export default function App() {
     const onRoomList = (rooms: RoomSummary[]) => setRoomList(rooms);
     const onRoomState = (state: RoomState) => setRoomState(state);
     const onGameState = (state: GameState) => setGameState(state);
-    const onError = ({ message }: { message: string }) => setError(message);
+    const onError = ({ message }: { message: string }) => {
+      if (roomStatusRef.current !== "in-game" || !hasGameStateRef.current) {
+        return;
+      }
+
+      const timestamp = Date.now();
+      if (CLAIM_FAILURE_MESSAGES.has(message)) {
+        lastClaimFailureRef.current = { message, at: timestamp };
+      }
+
+      appendGameLogEntries([{ text: message, kind: "error", timestamp }]);
+    };
     const onSessionSelf = ({
       playerId,
       name
@@ -178,7 +300,7 @@ export default function App() {
       socket.off("session:self", onSessionSelf);
       socket.off("error", onError);
     };
-  }, [playerName]);
+  }, [appendGameLogEntries, playerName]);
 
   const currentPlayers: Player[] = useMemo(() => {
     if (gameState) return gameState.players;
@@ -247,6 +369,12 @@ export default function App() {
     ? !claimWord.trim()
     : Boolean(claimWindow) || isClaimCooldownActive;
   const isClaimInputDisabled = (Boolean(claimWindow) && !isMyClaimWindow) || isClaimCooldownActive;
+  const shouldShowGameLog =
+    Boolean(gameState) && (roomState?.status === "in-game" || roomState?.status === "ended");
+  const visibleGameLogEntries = useMemo(() => {
+    if (isLogExpanded) return gameLogEntries;
+    return gameLogEntries.slice(-COLLAPSED_LOG_LINES);
+  }, [gameLogEntries, isLogExpanded]);
 
   const handleCreate = () => {
     if (!playerName) return;
@@ -297,6 +425,10 @@ export default function App() {
     socket.emit("room:leave");
     setRoomState(null);
     setGameState(null);
+    setGameLogEntries([]);
+    setIsLogExpanded(false);
+    previousGameStateRef.current = null;
+    lastClaimFailureRef.current = null;
   };
 
   const handleConfirmLeaveGame = () => {
@@ -425,6 +557,160 @@ export default function App() {
     isClaimCooldownActive
   ]);
 
+  useEffect(() => {
+    if (!isLogExpanded) return;
+    const logElement = logScrollRef.current;
+    if (!logElement) return;
+    logElement.scrollTop = logElement.scrollHeight;
+  }, [gameLogEntries, isLogExpanded]);
+
+  useEffect(() => {
+    const roomId = roomState?.id ?? null;
+    const previousRoomId = previousRoomIdRef.current;
+    const shouldReset =
+      !roomId ||
+      roomState?.status === "lobby" ||
+      (previousRoomId !== null && previousRoomId !== roomId);
+
+    if (shouldReset) {
+      setGameLogEntries([]);
+      setIsLogExpanded(false);
+      previousGameStateRef.current = null;
+      lastClaimFailureRef.current = null;
+    }
+
+    previousRoomIdRef.current = roomId;
+  }, [roomState?.id, roomState?.status]);
+
+  useEffect(() => {
+    if (!gameState || !roomState || (roomState.status !== "in-game" && roomState.status !== "ended")) {
+      previousGameStateRef.current = null;
+      return;
+    }
+
+    const previousState = previousGameStateRef.current;
+    const pendingEntries: PendingGameLogEntry[] = [];
+
+    if (!previousState) {
+      if (roomState.status === "in-game") {
+        pendingEntries.push({ text: "Game started.", kind: "event" });
+      }
+      previousGameStateRef.current = gameState;
+      appendGameLogEntries(pendingEntries);
+      return;
+    }
+
+    const previousCenterTileIds = new Set(previousState.centerTiles.map((tile) => tile.id));
+    const addedTiles = gameState.centerTiles.filter((tile) => !previousCenterTileIds.has(tile.id));
+    if (addedTiles.length > 0 && gameState.bagCount < previousState.bagCount) {
+      const flipperName = getPlayerName(previousState.players, previousState.turnPlayerId);
+      for (const tile of addedTiles) {
+        pendingEntries.push({ text: `${flipperName} flipped ${tile.letter}.`, kind: "event" });
+      }
+    }
+
+    if (!previousState.claimWindow && gameState.claimWindow) {
+      const claimantName = getPlayerName(gameState.players, gameState.claimWindow.playerId);
+      pendingEntries.push({
+        text: `${claimantName} started a claim window (${roomState.claimTimer.seconds}s).`,
+        kind: "event"
+      });
+    }
+
+    const previousWords = getWordSnapshots(previousState.players);
+    const currentWords = getWordSnapshots(gameState.players);
+    const previousWordMap = new Map(previousWords.map((word) => [word.id, word]));
+    const removedWords = previousWords.filter(
+      (word) => !currentWords.some((currentWord) => currentWord.id === word.id)
+    );
+    const addedWords = currentWords
+      .filter((word) => !previousWordMap.has(word.id))
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    for (const addedWord of addedWords) {
+      const claimantName = getPlayerName(gameState.players, addedWord.ownerId);
+      const replacedWord = findReplacedWord(addedWord, removedWords);
+      if (!replacedWord) {
+        pendingEntries.push({ text: `${claimantName} claimed ${addedWord.text}.`, kind: "event" });
+        continue;
+      }
+
+      const removedWordIndex = removedWords.findIndex((word) => word.id === replacedWord.id);
+      if (removedWordIndex !== -1) {
+        removedWords.splice(removedWordIndex, 1);
+      }
+
+      if (replacedWord.ownerId === addedWord.ownerId) {
+        pendingEntries.push({
+          text: `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
+          kind: "event"
+        });
+      } else {
+        const stolenFromName = getPlayerName(gameState.players, replacedWord.ownerId);
+        pendingEntries.push({
+          text: `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
+          kind: "event"
+        });
+      }
+    }
+
+    const previousCooldowns = previousState.claimCooldowns;
+    const currentCooldowns = gameState.claimCooldowns;
+    const startedCooldownPlayerIds = Object.keys(currentCooldowns).filter((playerId) => {
+      const previousEndsAt = previousCooldowns[playerId];
+      const currentEndsAt = currentCooldowns[playerId];
+      return typeof currentEndsAt === "number" && previousEndsAt !== currentEndsAt;
+    });
+
+    const previousClaimWindow = previousState.claimWindow;
+    let isClaimWindowExpired = false;
+    if (previousClaimWindow && !gameState.claimWindow) {
+      isClaimWindowExpired =
+        previousClaimWindow.endsAt <= Date.now() &&
+        previousClaimWindow.playerId in currentCooldowns;
+    }
+    if (isClaimWindowExpired && previousClaimWindow) {
+      const claimantName = getPlayerName(gameState.players, previousClaimWindow.playerId);
+      pendingEntries.push({ text: `${claimantName}'s claim window expired.`, kind: "event" });
+    }
+
+    for (const playerId of startedCooldownPlayerIds) {
+      if (playerId === selfPlayerId && lastClaimFailureRef.current) {
+        const elapsed = Date.now() - lastClaimFailureRef.current.at;
+        if (elapsed <= CLAIM_FAILURE_WINDOW_MS) {
+          pendingEntries.push({
+            text: `You failed claim: ${lastClaimFailureRef.current.message} You are on cooldown.`,
+            kind: "error"
+          });
+          lastClaimFailureRef.current = null;
+          continue;
+        }
+      }
+
+      const cooldownPlayerName = getPlayerName(gameState.players, playerId);
+      pendingEntries.push({ text: `${cooldownPlayerName} is on cooldown.`, kind: "event" });
+    }
+
+    if (previousState.bagCount > 0 && gameState.bagCount === 0 && gameState.endTimerEndsAt) {
+      pendingEntries.push({
+        text: "Bag is empty. Final countdown started (60s).",
+        kind: "event"
+      });
+    }
+
+    if (previousState.status !== "ended" && gameState.status === "ended") {
+      pendingEntries.push({ text: "Game ended.", kind: "event" });
+    }
+
+    previousGameStateRef.current = gameState;
+    appendGameLogEntries(pendingEntries);
+  }, [
+    appendGameLogEntries,
+    gameState,
+    roomState,
+    selfPlayerId
+  ]);
+
   if (!playerName) {
     return (
       <div className="name-gate">
@@ -504,13 +790,6 @@ export default function App() {
           </div>
         </div>
       </header>
-
-      {error && (
-        <div className="banner">
-          <span>{error}</span>
-          <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
 
       {!roomState && lobbyView === "list" && (
         <div className="grid">
@@ -779,6 +1058,39 @@ export default function App() {
               ))}
           </div>
         </div>
+      )}
+
+      {shouldShowGameLog && (
+        <section className={`panel game-log ${isLogExpanded ? "game-log-expanded" : ""}`}>
+          <div className="game-log-header">
+            <h2>Game Log</h2>
+            <div className="game-log-controls">
+              <span className="muted">
+                {gameLogEntries.length} {gameLogEntries.length === 1 ? "event" : "events"}
+              </span>
+              <button className="button-secondary" onClick={() => setIsLogExpanded((current) => !current)}>
+                {isLogExpanded ? "Collapse" : `Show all (${gameLogEntries.length})`}
+              </button>
+            </div>
+          </div>
+          <div
+            ref={logScrollRef}
+            className={`game-log-list ${isLogExpanded ? "expanded" : "collapsed"}`}
+          >
+            {visibleGameLogEntries.length === 0 && (
+              <div className="game-log-empty muted">No gameplay events yet.</div>
+            )}
+            {visibleGameLogEntries.map((entry) => (
+              <div
+                key={entry.id}
+                className={`game-log-row ${entry.kind === "error" ? "error" : ""}`}
+              >
+                <span className="game-log-time">{formatLogTime(entry.timestamp)}</span>
+                <span className="game-log-text">{entry.text}</span>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {joinPrompt && (

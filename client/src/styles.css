@@ -158,24 +158,6 @@ h1, h2, h3 {
   background: var(--green);
 }
 
-.banner {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem 1rem;
-  border-radius: 12px;
-  background: rgba(244, 63, 94, 0.2);
-  border: 1px solid rgba(244, 63, 94, 0.4);
-}
-
-.banner button {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-}
-
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -487,6 +469,85 @@ button:disabled {
   border-color: rgba(244, 63, 94, 0.45);
 }
 
+.game-log {
+  gap: 0.9rem;
+}
+
+.game-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.game-log-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.game-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  position: relative;
+}
+
+.game-log-list.collapsed {
+  overflow: hidden;
+}
+
+.game-log-list.collapsed::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.25rem;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.95));
+  pointer-events: none;
+}
+
+.game-log-list.expanded {
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.35rem;
+}
+
+.game-log-row {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  padding: 0.5rem 0.65rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.game-log-row.error {
+  background: rgba(244, 63, 94, 0.2);
+  border-color: rgba(244, 63, 94, 0.5);
+}
+
+.game-log-time {
+  flex: none;
+  width: 4.7rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.game-log-text {
+  line-height: 1.35;
+  font-size: 0.92rem;
+}
+
+.game-log-empty {
+  padding: 0.35rem 0.1rem;
+}
+
 @media (max-width: 960px) {
   .game {
     grid-template-columns: 1fr;
@@ -507,6 +568,12 @@ button:disabled {
   }
 
   .scoreboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .game-log-header,
+  .game-log-controls {
     flex-direction: column;
     align-items: flex-start;
   }
