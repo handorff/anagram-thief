@@ -211,6 +211,17 @@ input {
   font-size: 0.95rem;
 }
 
+textarea {
+  padding: 0.6rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.6);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
 button {
   padding: 0.6rem 1rem;
   border-radius: 12px;
@@ -340,9 +351,30 @@ button:disabled {
   align-items: center;
 }
 
+.practice-editor {
+  width: min(100%, 760px);
+}
+
+.practice-editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.practice-editor-stats {
+  margin: 0;
+}
+
+.practice-editor-error {
+  color: #fecdd3;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
 .practice-difficulty-control {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 0.55rem;
 }
 

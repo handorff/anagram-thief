@@ -8,6 +8,7 @@ import type {
   PracticeResult,
   PracticeScoredWord,
   PracticeSharePayload,
+  PracticeValidateCustomResponse,
   RoomState,
   RoomSummary
 } from "@shared/types";
@@ -21,6 +22,7 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const SESSION_STORAGE_KEY = "anagram.sessionId";
 const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
 const PRACTICE_SHARE_QUERY_PARAM = "practice";
+const LETTER_PATTERN = /^[A-Z]+$/;
 
 function generateId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -97,6 +99,10 @@ function sanitizeClientName(name: string) {
   return trimmed.length > 0 ? trimmed.slice(0, 24) : "Player";
 }
 
+function normalizeEditorText(value: string): string {
+  return value.trim().toUpperCase();
+}
+
 const DEFAULT_PRACTICE_DIFFICULTY: PracticeDifficulty = 3;
 const DEFAULT_FLIP_TIMER_SECONDS = 15;
 const MIN_FLIP_TIMER_SECONDS = 1;
@@ -108,6 +114,13 @@ const DEFAULT_FLIP_REVEAL_MS = 1_000;
 const CLAIM_WORD_ANIMATION_MS = 1_100;
 const MAX_LOG_ENTRIES = 300;
 const CLAIM_FAILURE_WINDOW_MS = 4_000;
+const CUSTOM_PUZZLE_CENTER_LETTER_MIN = 1;
+const CUSTOM_PUZZLE_CENTER_LETTER_MAX = 16;
+const CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX = 8;
+const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MIN = 4;
+const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX = 16;
+const CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX = 96;
+const CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS = 5_000;
 const CLAIM_FAILURE_MESSAGES = new Set([
   "Claim window expired.",
   "Enter a word to claim.",
@@ -158,6 +171,13 @@ type ClaimFailureContext = {
 };
 
 type WordHighlightKind = "claim" | "steal";
+
+type EditorPuzzleDraft = {
+  payload: PracticeSharePayload | null;
+  validationMessage: string | null;
+  normalizedCenter: string;
+  normalizedExistingWords: string[];
+};
 
 function clampFlipTimerSeconds(value: number) {
   const rounded = Math.round(value);
@@ -274,7 +294,8 @@ export default function App() {
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
   const [editNameDraft, setEditNameDraft] = useState("");
   const [isEditingName, setIsEditingName] = useState(false);
-  const [lobbyView, setLobbyView] = useState<"list" | "create">("list");
+  const [lobbyView, setLobbyView] = useState<"list" | "create" | "editor">("list");
+  const [lobbyError, setLobbyError] = useState<string | null>(null);
   const [joinPrompt, setJoinPrompt] = useState<{ roomId: string; roomName: string } | null>(null);
 
   const [createRoomName, setCreateRoomName] = useState("");
@@ -288,6 +309,12 @@ export default function App() {
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
   const [showPracticeStartPrompt, setShowPracticeStartPrompt] = useState(false);
   const [practiceStartDifficulty, setPracticeStartDifficulty] = useState<PracticeDifficulty | null>(null);
+  const [editorDifficulty, setEditorDifficulty] = useState<PracticeDifficulty>(DEFAULT_PRACTICE_DIFFICULTY);
+  const [editorCenterInput, setEditorCenterInput] = useState("");
+  const [editorExistingWordsInput, setEditorExistingWordsInput] = useState("");
+  const [editorValidationMessageFromServer, setEditorValidationMessageFromServer] = useState<string | null>(null);
+  const [editorShareStatus, setEditorShareStatus] = useState<"copied" | "failed" | null>(null);
+  const [isEditorShareValidationInFlight, setIsEditorShareValidationInFlight] = useState(false);
 
   const [claimWord, setClaimWord] = useState("");
   const [practiceWord, setPracticeWord] = useState("");
@@ -308,6 +335,7 @@ export default function App() {
   const previousRoomIdRef = useRef<string | null>(null);
   const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
   const practiceShareStatusTimeoutRef = useRef<number | null>(null);
+  const editorShareStatusTimeoutRef = useRef<number | null>(null);
 
   const [now, setNow] = useState(Date.now());
 
@@ -372,6 +400,10 @@ export default function App() {
         window.clearTimeout(practiceShareStatusTimeoutRef.current);
         practiceShareStatusTimeoutRef.current = null;
       }
+      if (editorShareStatusTimeoutRef.current !== null) {
+        window.clearTimeout(editorShareStatusTimeoutRef.current);
+        editorShareStatusTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -404,6 +436,7 @@ export default function App() {
       }
 
       if (roomStatusRef.current !== "in-game" || !hasGameStateRef.current) {
+        setLobbyError(message);
         return;
       }
 
@@ -604,6 +637,108 @@ export default function App() {
     };
   }, [practiceResult, showAllPracticeOptions]);
 
+  const editorPuzzleDraft: EditorPuzzleDraft = useMemo(() => {
+    const normalizedCenter = normalizeEditorText(editorCenterInput);
+    const normalizedExistingWords = editorExistingWordsInput
+      .split(/\r?\n/)
+      .map((line) => normalizeEditorText(line))
+      .filter((line) => line.length > 0);
+
+    if (!normalizedCenter) {
+      return {
+        payload: null,
+        validationMessage: "Enter at least one center tile letter.",
+        normalizedCenter,
+        normalizedExistingWords
+      };
+    }
+
+    if (!LETTER_PATTERN.test(normalizedCenter)) {
+      return {
+        payload: null,
+        validationMessage: "Center tiles must contain only letters A-Z.",
+        normalizedCenter,
+        normalizedExistingWords
+      };
+    }
+
+    if (
+      normalizedCenter.length < CUSTOM_PUZZLE_CENTER_LETTER_MIN ||
+      normalizedCenter.length > CUSTOM_PUZZLE_CENTER_LETTER_MAX
+    ) {
+      return {
+        payload: null,
+        validationMessage: `Center tiles must be ${CUSTOM_PUZZLE_CENTER_LETTER_MIN}-${CUSTOM_PUZZLE_CENTER_LETTER_MAX} letters.`,
+        normalizedCenter,
+        normalizedExistingWords
+      };
+    }
+
+    if (normalizedExistingWords.length > CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX) {
+      return {
+        payload: null,
+        validationMessage: `Use at most ${CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX} existing words.`,
+        normalizedCenter,
+        normalizedExistingWords
+      };
+    }
+
+    let totalCharacters = normalizedCenter.length;
+    for (const word of normalizedExistingWords) {
+      if (!LETTER_PATTERN.test(word)) {
+        return {
+          payload: null,
+          validationMessage: "Existing words must contain only letters A-Z.",
+          normalizedCenter,
+          normalizedExistingWords
+        };
+      }
+      if (
+        word.length < CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MIN ||
+        word.length > CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX
+      ) {
+        return {
+          payload: null,
+          validationMessage: `Each existing word must be ${CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MIN}-${CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX} letters.`,
+          normalizedCenter,
+          normalizedExistingWords
+        };
+      }
+      totalCharacters += word.length;
+      if (totalCharacters > CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX) {
+        return {
+          payload: null,
+          validationMessage: `Total characters across center tiles and existing words must be at most ${CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX}.`,
+          normalizedCenter,
+          normalizedExistingWords
+        };
+      }
+    }
+
+    return {
+      payload: {
+        v: 2,
+        d: editorDifficulty,
+        c: normalizedCenter,
+        w: normalizedExistingWords
+      },
+      validationMessage: null,
+      normalizedCenter,
+      normalizedExistingWords
+    };
+  }, [editorCenterInput, editorDifficulty, editorExistingWordsInput]);
+
+  const showEditorShareStatus = useCallback((status: "copied" | "failed") => {
+    setEditorShareStatus(status);
+    if (editorShareStatusTimeoutRef.current !== null) {
+      window.clearTimeout(editorShareStatusTimeoutRef.current);
+    }
+    editorShareStatusTimeoutRef.current = window.setTimeout(() => {
+      setEditorShareStatus(null);
+      editorShareStatusTimeoutRef.current = null;
+    }, 2_500);
+  }, []);
+
   const showPracticeShareStatus = useCallback((status: "copied" | "failed") => {
     setPracticeShareStatus(status);
     if (practiceShareStatusTimeoutRef.current !== null) {
@@ -615,9 +750,19 @@ export default function App() {
     }, 2_500);
   }, []);
 
+  const editorValidationMessage = editorPuzzleDraft.validationMessage ?? editorValidationMessageFromServer;
+  const isEditorPuzzleReady = editorPuzzleDraft.payload !== null;
+  const editorTotalCharacters = useMemo(() => {
+    return (
+      editorPuzzleDraft.normalizedCenter.length +
+      editorPuzzleDraft.normalizedExistingWords.reduce((sum, word) => sum + word.length, 0)
+    );
+  }, [editorPuzzleDraft.normalizedCenter.length, editorPuzzleDraft.normalizedExistingWords]);
+
   const handleCreate = () => {
     if (!playerName) return;
     if (practiceState.active) return;
+    setLobbyError(null);
     const flipTimerSeconds = clampFlipTimerSeconds(createFlipTimerSeconds);
     const claimTimerSeconds = clampClaimTimerSeconds(createClaimTimerSeconds);
     socket.emit("room:create", {
@@ -637,6 +782,7 @@ export default function App() {
     if (room.status !== "lobby") return;
     if (room.playerCount >= room.maxPlayers) return;
     if (room.isPublic) {
+      setLobbyError(null);
       socket.emit("room:join", {
         roomId: room.id,
         name: playerName
@@ -649,6 +795,7 @@ export default function App() {
 
   const handleJoinWithCode = () => {
     if (!playerName || !joinPrompt) return;
+    setLobbyError(null);
     socket.emit("room:join", {
       roomId: joinPrompt.roomId,
       name: playerName,
@@ -663,6 +810,7 @@ export default function App() {
 
   const handleStartPractice = () => {
     if (roomState) return;
+    setLobbyError(null);
     setPracticeStartDifficulty(null);
     setShowPracticeStartPrompt(true);
     setLobbyView("list");
@@ -670,6 +818,7 @@ export default function App() {
 
   const handleConfirmPracticeStart = () => {
     if (practiceStartDifficulty === null) return;
+    setLobbyError(null);
     socket.emit("practice:start", {
       difficulty: practiceStartDifficulty
     });
@@ -680,6 +829,82 @@ export default function App() {
   const handleCancelPracticeStart = () => {
     setShowPracticeStartPrompt(false);
     setPracticeStartDifficulty(null);
+  };
+
+  const handleOpenPracticeEditor = () => {
+    setLobbyError(null);
+    setEditorValidationMessageFromServer(null);
+    setEditorShareStatus(null);
+    setIsEditorShareValidationInFlight(false);
+    setLobbyView("editor");
+  };
+
+  const handlePlayEditorPuzzle = () => {
+    if (!editorPuzzleDraft.payload) return;
+    setLobbyError(null);
+    setEditorValidationMessageFromServer(null);
+    socket.emit("practice:start", {
+      difficulty: editorPuzzleDraft.payload.d,
+      sharedPuzzle: editorPuzzleDraft.payload
+    });
+  };
+
+  const handleShareEditorPuzzle = async () => {
+    if (!editorPuzzleDraft.payload) return;
+
+    setLobbyError(null);
+    setEditorValidationMessageFromServer(null);
+    setIsEditorShareValidationInFlight(true);
+
+    const validationResponse = await new Promise<PracticeValidateCustomResponse>((resolve) => {
+      let isSettled = false;
+      const timeoutId = window.setTimeout(() => {
+        if (isSettled) return;
+        isSettled = true;
+        resolve({
+          ok: false,
+          message: "Validation timed out. Please try again."
+        });
+      }, CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS);
+
+      socket.emit(
+        "practice:validate-custom",
+        { sharedPuzzle: editorPuzzleDraft.payload },
+        (response: PracticeValidateCustomResponse) => {
+          if (isSettled) return;
+          isSettled = true;
+          window.clearTimeout(timeoutId);
+          if (!response || typeof response.ok !== "boolean") {
+            resolve({
+              ok: false,
+              message: "Validation failed."
+            });
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    setIsEditorShareValidationInFlight(false);
+
+    if (!validationResponse.ok) {
+      setEditorValidationMessageFromServer(validationResponse.message ?? "Custom puzzle validation failed.");
+      showEditorShareStatus("failed");
+      return;
+    }
+
+    const token = encodePracticeSharePayload(editorPuzzleDraft.payload);
+    const shareUrl = new URL(window.location.href);
+    shareUrl.searchParams.set(PRACTICE_SHARE_QUERY_PARAM, token);
+
+    try {
+      await navigator.clipboard.writeText(shareUrl.toString());
+      showEditorShareStatus("copied");
+    } catch {
+      setEditorValidationMessageFromServer("Could not copy link. Please try again.");
+      showEditorShareStatus("failed");
+    }
   };
 
   const handlePracticeDifficultyChange = (value: number) => {
@@ -834,10 +1059,16 @@ export default function App() {
   }, [practiceState.puzzle?.id]);
 
   useEffect(() => {
+    setEditorValidationMessageFromServer(null);
+    setEditorShareStatus(null);
+  }, [editorCenterInput, editorExistingWordsInput, editorDifficulty]);
+
+  useEffect(() => {
     if (!pendingSharedPuzzle) return;
     if (!isConnected) return;
     if (roomState) return;
 
+    setLobbyError(null);
     socket.emit("practice:start", { sharedPuzzle: pendingSharedPuzzle });
     setPendingSharedPuzzle(null);
     removePracticeShareFromUrl();
@@ -846,6 +1077,7 @@ export default function App() {
   useEffect(() => {
     if (roomState) {
       setJoinPrompt(null);
+      setLobbyError(null);
       return;
     }
     setLobbyView("list");
@@ -855,6 +1087,7 @@ export default function App() {
     if (!practiceState.active) return;
     setJoinPrompt(null);
     setLobbyView("list");
+    setLobbyError(null);
   }, [practiceState.active]);
 
   useEffect(() => {
@@ -1199,8 +1432,16 @@ export default function App() {
               Train solo on one puzzle at a time. Submit your best play, then review every possible claim
               and score.
             </p>
+            {lobbyError && (
+              <div className="practice-editor-error" role="alert">
+                {lobbyError}
+              </div>
+            )}
             <div className="button-row">
               <button onClick={handleStartPractice}>Start practice</button>
+              <button className="button-secondary" onClick={handleOpenPracticeEditor}>
+                Create custom puzzle
+              </button>
             </div>
           </section>
         </div>
@@ -1279,6 +1520,101 @@ export default function App() {
             </div>
           </section>
 
+        </div>
+      )}
+
+      {!roomState && !practiceState.active && lobbyView === "editor" && (
+        <div className="grid">
+          <section className="panel panel-narrow practice-editor">
+            <h2>Custom Practice Puzzle</h2>
+            <p className="muted">
+              Pick center tiles and existing words, then play this exact puzzle or share it as a link.
+            </p>
+
+            <div className="practice-editor-fields">
+              <div className="practice-difficulty-control" aria-label="Custom puzzle difficulty">
+                <span>Difficulty</span>
+                <div className="practice-difficulty-segmented" role="group" aria-label="Custom puzzle difficulty">
+                  {[1, 2, 3, 4, 5].map((level) => (
+                    <button
+                      key={level}
+                      type="button"
+                      className={
+                        editorDifficulty === level ? "practice-difficulty-option active" : "practice-difficulty-option"
+                      }
+                      onClick={() => setEditorDifficulty(level as PracticeDifficulty)}
+                      aria-pressed={editorDifficulty === level}
+                    >
+                      {level}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label>
+                Center tiles (A-Z)
+                <input
+                  value={editorCenterInput}
+                  onChange={(event) => setEditorCenterInput(event.target.value)}
+                  placeholder="TEAM"
+                />
+              </label>
+
+              <label>
+                Existing words (one per line)
+                <textarea
+                  value={editorExistingWordsInput}
+                  onChange={(event) => setEditorExistingWordsInput(event.target.value)}
+                  placeholder={"RATE\nALERT"}
+                  rows={6}
+                />
+              </label>
+
+              <p className="muted practice-editor-stats">
+                Center: {editorPuzzleDraft.normalizedCenter.length}/{CUSTOM_PUZZLE_CENTER_LETTER_MAX} letters ·
+                Existing words: {editorPuzzleDraft.normalizedExistingWords.length}/
+                {CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX} · Total chars: {editorTotalCharacters}/
+                {CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX}
+              </p>
+
+              {(editorValidationMessage || lobbyError) && (
+                <div className="practice-editor-error" role="alert">
+                  {editorValidationMessage ?? lobbyError}
+                </div>
+              )}
+            </div>
+
+            <div className="button-row">
+              <button
+                className="button-secondary"
+                onClick={() => {
+                  setLobbyError(null);
+                  setEditorValidationMessageFromServer(null);
+                  setEditorShareStatus(null);
+                  setIsEditorShareValidationInFlight(false);
+                  setLobbyView("list");
+                }}
+              >
+                Back to lobby
+              </button>
+              <button onClick={handlePlayEditorPuzzle} disabled={!isEditorPuzzleReady}>
+                Play puzzle
+              </button>
+              <button
+                className="button-secondary"
+                onClick={handleShareEditorPuzzle}
+                disabled={!isEditorPuzzleReady || isEditorShareValidationInFlight}
+              >
+                {isEditorShareValidationInFlight
+                  ? "Validating..."
+                  : editorShareStatus === "copied"
+                    ? "Copied!"
+                    : editorShareStatus === "failed"
+                      ? "Copy failed"
+                      : "Share link"}
+              </button>
+            </div>
+          </section>
         </div>
       )}
 

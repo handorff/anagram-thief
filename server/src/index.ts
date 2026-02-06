@@ -15,6 +15,8 @@ import type {
   PracticePuzzle,
   PracticeResult,
   PracticeStartRequest,
+  PracticeValidateCustomRequest,
+  PracticeValidateCustomResponse,
   RoomState,
   RoomSummary,
   Tile,
@@ -27,7 +29,7 @@ import {
   createPracticeEngine,
   DEFAULT_PRACTICE_DIFFICULTY
 } from "./practice.js";
-import { resolvePracticeStartRequest } from "./practiceShare.js";
+import { resolvePracticeStartRequest, validateCustomPracticePuzzle } from "./practiceShare.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -817,10 +819,15 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const { difficulty: resolvedDifficulty, puzzle } = resolvePracticeStartRequest(request, {
+    const startResolution = resolvePracticeStartRequest(request, {
       generatePuzzle: (difficulty) => practiceEngine.generatePuzzle(difficulty),
       solvePuzzle: (candidatePuzzle) => practiceEngine.solvePuzzle(candidatePuzzle)
     });
+    if (!startResolution.ok) {
+      emitError(socket, startResolution.message);
+      return;
+    }
+    const { difficulty: resolvedDifficulty, puzzle } = startResolution;
     const nextState: PracticeModeStateInternal = {
       active: true,
       phase: "puzzle",
@@ -832,6 +839,21 @@ io.on("connection", (socket) => {
     practiceBySessionId.set(currentSession.sessionId, nextState);
     emitPracticeState(socket, currentSession.sessionId);
   });
+
+  socket.on(
+    "practice:validate-custom",
+    (
+      request: PracticeValidateCustomRequest | undefined,
+      callback?: (response: PracticeValidateCustomResponse) => void
+    ) => {
+      const response = validateCustomPracticePuzzle(request?.sharedPuzzle, (candidatePuzzle) =>
+        practiceEngine.solvePuzzle(candidatePuzzle)
+      );
+      if (typeof callback === "function") {
+        callback(response);
+      }
+    }
+  );
 
   socket.on("practice:set-difficulty", ({ difficulty }: { difficulty: PracticeDifficulty }) => {
     const currentSession = getSessionBySocket(socket);

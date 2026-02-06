@@ -7,7 +7,11 @@ import {
   encodePracticeSharePayload
 } from "../../shared/practiceShare.js";
 import { createPracticeEngine } from "./practice.js";
-import { materializeSharedPracticePuzzle, resolvePracticeStartRequest } from "./practiceShare.js";
+import {
+  materializeSharedPracticePuzzle,
+  resolvePracticeStartRequest,
+  validateCustomPracticePuzzle
+} from "./practiceShare.js";
 
 function buildPuzzle(center: string, existingWords: string[]): PracticePuzzle {
   return {
@@ -123,6 +127,10 @@ test("resolvePracticeStartRequest uses shared puzzle for practice:start payload"
     }
   );
 
+  assert.equal(resolved.ok, true);
+  if (!resolved.ok) {
+    assert.fail("Expected shared puzzle to resolve successfully.");
+  }
   assert.equal(resolved.isShared, true);
   assert.equal(resolved.difficulty, 4);
   assert.equal(generatedCalls, 0);
@@ -131,4 +139,95 @@ test("resolvePracticeStartRequest uses shared puzzle for practice:start payload"
     ["T", "E", "A", "M"]
   );
   assert.deepEqual(resolved.puzzle.existingWords.map((word) => word.text), []);
+});
+
+test("resolvePracticeStartRequest rejects invalid shared puzzles without falling back to random", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+  let generatedCalls = 0;
+
+  const resolved = resolvePracticeStartRequest(
+    {
+      difficulty: 2,
+      sharedPuzzle: {
+        v: 2,
+        d: 2,
+        c: "ZZZZ",
+        w: []
+      }
+    },
+    {
+      generatePuzzle: () => {
+        generatedCalls += 1;
+        return buildPuzzle("TEAM", []);
+      },
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+
+  assert.equal(resolved.ok, false);
+  if (resolved.ok) {
+    assert.fail("Expected invalid shared puzzle to fail.");
+  }
+  assert.equal(generatedCalls, 0);
+  assert.equal(resolved.message, "Custom puzzle is invalid or has no valid plays.");
+});
+
+test("resolvePracticeStartRequest still generates random puzzle when no shared puzzle is provided", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+  let generatedCalls = 0;
+  const generatedPuzzle = buildPuzzle("TEAM", []);
+
+  const resolved = resolvePracticeStartRequest(
+    {
+      difficulty: 5
+    },
+    {
+      generatePuzzle: () => {
+        generatedCalls += 1;
+        return generatedPuzzle;
+      },
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+
+  assert.equal(resolved.ok, true);
+  if (!resolved.ok) {
+    assert.fail("Expected random generation to succeed.");
+  }
+  assert.equal(generatedCalls, 1);
+  assert.equal(resolved.isShared, false);
+  assert.equal(resolved.difficulty, 5);
+  assert.equal(resolved.puzzle, generatedPuzzle);
+});
+
+test("validateCustomPracticePuzzle returns explicit validation responses", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+
+  const validResponse = validateCustomPracticePuzzle(
+    {
+      v: 2,
+      d: 3,
+      c: "TEAM",
+      w: []
+    },
+    (puzzle) => engine.solvePuzzle(puzzle)
+  );
+  assert.deepEqual(validResponse, { ok: true });
+
+  const invalidResponse = validateCustomPracticePuzzle(
+    {
+      v: 2,
+      d: 3,
+      c: "ZZZZ",
+      w: []
+    },
+    (puzzle) => engine.solvePuzzle(puzzle)
+  );
+  assert.deepEqual(invalidResponse, {
+    ok: false,
+    message: "Custom puzzle is invalid or has no valid plays."
+  });
 });

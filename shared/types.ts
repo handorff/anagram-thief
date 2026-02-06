@@ -102,6 +102,15 @@ export interface PracticeStartRequest {
   sharedPuzzle?: PracticeSharePayload;
 }
 
+export interface PracticeValidateCustomRequest {
+  sharedPuzzle: PracticeSharePayload;
+}
+
+export interface PracticeValidateCustomResponse {
+  ok: boolean;
+  message?: string;
+}
+
 export interface PracticeScoredWord {
   word: string;
   score: number;

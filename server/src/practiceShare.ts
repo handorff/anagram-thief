@@ -4,7 +4,8 @@ import type {
   PracticePuzzle,
   PracticeScoredWord,
   PracticeSharePayload,
-  PracticeStartRequest
+  PracticeStartRequest,
+  PracticeValidateCustomResponse
 } from "../../shared/types.js";
 import { normalizeWord } from "../../shared/wordValidation.js";
 import { clampPracticeDifficulty } from "./practice.js";
@@ -17,17 +18,26 @@ const MAX_SHARED_EXISTING_WORDS = 8;
 const MIN_SHARED_EXISTING_WORD_LENGTH = 4;
 const MAX_SHARED_EXISTING_WORD_LENGTH = 16;
 const MAX_SHARED_TOTAL_CHARACTERS = 96;
+const INVALID_SHARED_PUZZLE_MESSAGE = "Custom puzzle is invalid or has no valid plays.";
 
 type ResolvePracticeStartDependencies = {
   generatePuzzle: (difficulty: PracticeDifficulty) => PracticePuzzle;
   solvePuzzle: (puzzle: PracticePuzzle) => PracticeScoredWord[];
 };
 
-type ResolvedPracticeStart = {
+type ResolvePracticeStartSuccess = {
+  ok: true;
   difficulty: PracticeDifficulty;
   puzzle: PracticePuzzle;
   isShared: boolean;
 };
+
+type ResolvePracticeStartFailure = {
+  ok: false;
+  message: string;
+};
+
+export type ResolvedPracticeStart = ResolvePracticeStartSuccess | ResolvePracticeStartFailure;
 
 function normalizeSharedWord(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -93,24 +103,44 @@ export function materializeSharedPracticePuzzle(
   return { difficulty, puzzle };
 }
 
+export function validateCustomPracticePuzzle(
+  sharedPuzzle: unknown,
+  solvePuzzle: (puzzle: PracticePuzzle) => PracticeScoredWord[]
+): PracticeValidateCustomResponse {
+  const materialized = materializeSharedPracticePuzzle(sharedPuzzle, solvePuzzle);
+  if (!materialized) {
+    return {
+      ok: false,
+      message: INVALID_SHARED_PUZZLE_MESSAGE
+    };
+  }
+  return { ok: true };
+}
+
 export function resolvePracticeStartRequest(
   request: PracticeStartRequest | null | undefined,
   dependencies: ResolvePracticeStartDependencies
 ): ResolvedPracticeStart {
-  const resolvedDifficulty = clampPracticeDifficulty(request?.difficulty);
   const sharedPuzzle = request?.sharedPuzzle;
-  if (sharedPuzzle) {
+  if (sharedPuzzle !== undefined) {
     const materialized = materializeSharedPracticePuzzle(sharedPuzzle, dependencies.solvePuzzle);
-    if (materialized) {
+    if (!materialized) {
       return {
-        difficulty: materialized.difficulty,
-        puzzle: materialized.puzzle,
-        isShared: true
+        ok: false,
+        message: INVALID_SHARED_PUZZLE_MESSAGE
       };
     }
+    return {
+      ok: true,
+      difficulty: materialized.difficulty,
+      puzzle: materialized.puzzle,
+      isShared: true
+    };
   }
 
+  const resolvedDifficulty = clampPracticeDifficulty(request?.difficulty);
   return {
+    ok: true,
     difficulty: resolvedDifficulty,
     puzzle: dependencies.generatePuzzle(resolvedDifficulty),
     isShared: false
