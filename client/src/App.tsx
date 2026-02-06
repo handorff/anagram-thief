@@ -70,6 +70,7 @@ const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
 const DEFAULT_FLIP_REVEAL_MS = 1_000;
+const CLAIM_WORD_ANIMATION_MS = 1_100;
 const MAX_LOG_ENTRIES = 300;
 const CLAIM_FAILURE_WINDOW_MS = 4_000;
 const CLAIM_FAILURE_MESSAGES = new Set([
@@ -173,6 +174,7 @@ export default function App() {
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
+  const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, true>>({});
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
@@ -199,6 +201,7 @@ export default function App() {
   const roomStatusRef = useRef<RoomState["status"] | null>(null);
   const hasGameStateRef = useRef(false);
   const previousRoomIdRef = useRef<string | null>(null);
+  const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
 
   const [now, setNow] = useState(Date.now());
 
@@ -217,9 +220,44 @@ export default function App() {
     });
   }, []);
 
+  const clearClaimWordHighlights = useCallback(() => {
+    claimAnimationTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    claimAnimationTimeoutsRef.current.clear();
+    setClaimedWordHighlights({});
+  }, []);
+
+  const markClaimedWordForAnimation = useCallback((wordId: string) => {
+    setClaimedWordHighlights((current) => ({ ...current, [wordId]: true }));
+    const existingTimeoutId = claimAnimationTimeoutsRef.current.get(wordId);
+    if (existingTimeoutId !== undefined) {
+      window.clearTimeout(existingTimeoutId);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setClaimedWordHighlights((current) => {
+        if (!(wordId in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[wordId];
+        return next;
+      });
+      claimAnimationTimeoutsRef.current.delete(wordId);
+    }, CLAIM_WORD_ANIMATION_MS);
+
+    claimAnimationTimeoutsRef.current.set(wordId, timeoutId);
+  }, []);
+
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      claimAnimationTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      claimAnimationTimeoutsRef.current.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -447,6 +485,7 @@ export default function App() {
     setRoomState(null);
     setGameState(null);
     setGameLogEntries([]);
+    clearClaimWordHighlights();
     previousGameStateRef.current = null;
     lastClaimFailureRef.current = null;
   };
@@ -594,12 +633,13 @@ export default function App() {
 
     if (shouldReset) {
       setGameLogEntries([]);
+      clearClaimWordHighlights();
       previousGameStateRef.current = null;
       lastClaimFailureRef.current = null;
     }
 
     previousRoomIdRef.current = roomId;
-  }, [roomState?.id, roomState?.status]);
+  }, [clearClaimWordHighlights, roomState?.id, roomState?.status]);
 
   useEffect(() => {
     if (!shouldShowGameLog) return;
@@ -655,6 +695,7 @@ export default function App() {
       .sort((a, b) => a.createdAt - b.createdAt);
 
     for (const addedWord of addedWords) {
+      markClaimedWordForAnimation(addedWord.id);
       const claimantName = getPlayerName(gameState.players, addedWord.ownerId);
       const replacedWord = findReplacedWord(addedWord, removedWords);
       if (!replacedWord) {
@@ -742,6 +783,7 @@ export default function App() {
   }, [
     appendGameLogEntries,
     gameState,
+    markClaimedWordForAnimation,
     roomState,
     selfPlayerId
   ]);
@@ -1092,7 +1134,11 @@ export default function App() {
 
             <div className="words">
               {gameState.players.map((player) => (
-                <WordList key={player.id} player={player} />
+                <WordList
+                  key={player.id}
+                  player={player}
+                  highlightedWordIds={claimedWordHighlights}
+                />
               ))}
             </div>
           </section>
@@ -1202,7 +1248,13 @@ export default function App() {
   );
 }
 
-function WordList({ player }: { player: Player }) {
+function WordList({
+  player,
+  highlightedWordIds
+}: {
+  player: Player;
+  highlightedWordIds: Record<string, true>;
+}) {
   return (
     <div className="word-list">
       <div className="word-header">
@@ -1211,7 +1263,10 @@ function WordList({ player }: { player: Player }) {
       </div>
       {player.words.length === 0 && <div className="muted">No words yet.</div>}
       {player.words.map((word) => (
-        <div key={word.id} className="word-item">
+        <div
+          key={word.id}
+          className={highlightedWordIds[word.id] ? "word-item word-item-claim" : "word-item"}
+        >
           <div className="word-tiles" aria-label={word.text}>
             {word.text.split("").map((letter, index) => (
               <div key={`${word.id}-${index}`} className="tile word-tile">
