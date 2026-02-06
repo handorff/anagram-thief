@@ -109,6 +109,8 @@ type ClaimFailureContext = {
   at: number;
 };
 
+type WordHighlightKind = "claim" | "steal";
+
 function clampFlipTimerSeconds(value: number) {
   const rounded = Math.round(value);
   if (Number.isNaN(rounded)) return DEFAULT_FLIP_TIMER_SECONDS;
@@ -174,7 +176,7 @@ export default function App() {
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
-  const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, true>>({});
+  const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
@@ -226,8 +228,8 @@ export default function App() {
     setClaimedWordHighlights({});
   }, []);
 
-  const markClaimedWordForAnimation = useCallback((wordId: string) => {
-    setClaimedWordHighlights((current) => ({ ...current, [wordId]: true }));
+  const markClaimedWordForAnimation = useCallback((wordId: string, kind: WordHighlightKind = "claim") => {
+    setClaimedWordHighlights((current) => ({ ...current, [wordId]: kind }));
     const existingTimeoutId = claimAnimationTimeoutsRef.current.get(wordId);
     if (existingTimeoutId !== undefined) {
       window.clearTimeout(existingTimeoutId);
@@ -695,10 +697,10 @@ export default function App() {
       .sort((a, b) => a.createdAt - b.createdAt);
 
     for (const addedWord of addedWords) {
-      markClaimedWordForAnimation(addedWord.id);
       const claimantName = getPlayerName(gameState.players, addedWord.ownerId);
       const replacedWord = findReplacedWord(addedWord, removedWords);
       if (!replacedWord) {
+        markClaimedWordForAnimation(addedWord.id, "claim");
         pendingEntries.push({ text: `${claimantName} claimed ${addedWord.text}.`, kind: "event" });
         continue;
       }
@@ -709,11 +711,13 @@ export default function App() {
       }
 
       if (replacedWord.ownerId === addedWord.ownerId) {
+        markClaimedWordForAnimation(addedWord.id, "claim");
         pendingEntries.push({
           text: `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
           kind: "event"
         });
       } else {
+        markClaimedWordForAnimation(addedWord.id, "steal");
         const stolenFromName = getPlayerName(gameState.players, replacedWord.ownerId);
         pendingEntries.push({
           text: `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
@@ -1253,7 +1257,7 @@ function WordList({
   highlightedWordIds
 }: {
   player: Player;
-  highlightedWordIds: Record<string, true>;
+  highlightedWordIds: Record<string, WordHighlightKind>;
 }) {
   return (
     <div className="word-list">
@@ -1263,10 +1267,7 @@ function WordList({
       </div>
       {player.words.length === 0 && <div className="muted">No words yet.</div>}
       {player.words.map((word) => (
-        <div
-          key={word.id}
-          className={highlightedWordIds[word.id] ? "word-item word-item-claim" : "word-item"}
-        >
+        <div key={word.id} className={getWordItemClassName(highlightedWordIds[word.id])}>
           <div className="word-tiles" aria-label={word.text}>
             {word.text.split("").map((letter, index) => (
               <div key={`${word.id}-${index}`} className="tile word-tile">
@@ -1278,4 +1279,14 @@ function WordList({
       ))}
     </div>
   );
+}
+
+function getWordItemClassName(highlightKind: WordHighlightKind | undefined) {
+  if (highlightKind === "steal") {
+    return "word-item word-item-steal";
+  }
+  if (highlightKind === "claim") {
+    return "word-item word-item-claim";
+  }
+  return "word-item";
 }
