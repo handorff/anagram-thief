@@ -97,6 +97,13 @@ export interface PracticeSharePayload {
   w: string[];
 }
 
+export interface PracticeResultSharePayload {
+  v: 1;
+  p: PracticeSharePayload;
+  a: string;
+  n?: string;
+}
+
 export interface PracticeStartRequest {
   difficulty?: PracticeDifficulty;
   sharedPuzzle?: PracticeSharePayload;

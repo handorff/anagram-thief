@@ -6,6 +6,11 @@ import {
   decodePracticeSharePayload,
   encodePracticeSharePayload
 } from "../../shared/practiceShare.js";
+import {
+  buildPracticeResultSharePayload,
+  decodePracticeResultSharePayload,
+  encodePracticeResultSharePayload
+} from "../../shared/practiceResultShare.js";
 import { createPracticeEngine } from "./practice.js";
 import {
   materializeSharedPracticePuzzle,
@@ -47,6 +52,46 @@ test("share payload decode returns null for invalid tokens", () => {
   assert.equal(decodePracticeSharePayload("2.3.TEAM.RATE"), null);
   assert.equal(decodePracticeSharePayload("$$$$"), null);
   assert.equal(decodePracticeSharePayload("a"), null);
+});
+
+test("result share payload round-trip encodes and decodes puzzle and answer", () => {
+  const payload = buildPracticeResultSharePayload(3, buildPuzzle("team", ["rate"]), "meat", "Player One");
+  assert.deepEqual(payload, {
+    v: 1,
+    p: {
+      v: 2,
+      d: 3,
+      c: "TEAM",
+      w: ["RATE"]
+    },
+    a: "MEAT",
+    n: "Player One"
+  });
+
+  const token = encodePracticeResultSharePayload(payload);
+  const decoded = decodePracticeResultSharePayload(token);
+  assert.deepEqual(decoded, payload);
+});
+
+test("result share payload decode returns null for malformed tokens", () => {
+  assert.equal(decodePracticeResultSharePayload(""), null);
+  assert.equal(decodePracticeResultSharePayload("2.ABC.WORD"), null);
+  assert.equal(decodePracticeResultSharePayload("1"), null);
+  assert.equal(decodePracticeResultSharePayload("1..."), null);
+  assert.equal(decodePracticeResultSharePayload("1.invalid.WORD"), null);
+  assert.equal(decodePracticeResultSharePayload("1.invalid-token"), null);
+});
+
+test("result share payload decode rejects invalid puzzle token and answer format", () => {
+  const puzzleToken = encodePracticeSharePayload({
+    v: 2,
+    d: 3,
+    c: "TEAM",
+    w: []
+  });
+
+  assert.equal(decodePracticeResultSharePayload(`1.invalid.${"TEAM"}`), null);
+  assert.equal(decodePracticeResultSharePayload(`1.${puzzleToken}.TEAM1`), null);
 });
 
 test("materializeSharedPracticePuzzle accepts valid share payload", () => {

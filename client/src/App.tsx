@@ -5,6 +5,7 @@ import type {
   Player,
   PracticeDifficulty,
   PracticeModeState,
+  PracticeResultSharePayload,
   PracticeResult,
   PracticeScoredWord,
   PracticeSharePayload,
@@ -17,12 +18,19 @@ import {
   decodePracticeSharePayload,
   encodePracticeSharePayload
 } from "@shared/practiceShare";
+import {
+  buildPracticeResultSharePayload,
+  decodePracticeResultSharePayload,
+  encodePracticeResultSharePayload
+} from "@shared/practiceResultShare";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const SESSION_STORAGE_KEY = "anagram.sessionId";
 const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
 const PRACTICE_SHARE_QUERY_PARAM = "practice";
+const PRACTICE_RESULT_SHARE_QUERY_PARAM = "practiceResult";
 const LETTER_PATTERN = /^[A-Z]+$/;
+const PENDING_RESULT_AUTO_SUBMIT_TTL_MS = 15_000;
 
 function generateId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -65,19 +73,76 @@ function getOrCreateSessionId() {
   }
 }
 
-function readPracticeSharePayloadFromUrl(): PracticeSharePayload | null {
+type PendingSharedLaunch =
+  | {
+      kind: "puzzle";
+      payload: PracticeSharePayload;
+    }
+  | {
+      kind: "result";
+      payload: PracticeSharePayload;
+      submittedWord: string;
+      sharerName?: string;
+      expectedPuzzleFingerprint: string;
+    };
+
+type PendingResultAutoSubmit = {
+  submittedWord: string;
+  expectedPuzzleFingerprint: string;
+  expiresAt: number;
+};
+
+function buildPracticePuzzleFingerprint(payload: Pick<PracticeSharePayload, "c" | "w">): string {
+  return `${payload.c}|${payload.w.join(",")}`;
+}
+
+function buildPracticePuzzleFingerprintFromState(puzzle: PracticeModeState["puzzle"]): string | null {
+  if (!puzzle) return null;
+  const center = puzzle.centerTiles.map((tile) => normalizeEditorText(tile.letter)).join("");
+  const words = puzzle.existingWords.map((word) => normalizeEditorText(word.text));
+  return buildPracticePuzzleFingerprint({
+    c: center,
+    w: words
+  });
+}
+
+function parseResultSharePayloadFromUrl(token: string): PracticeResultSharePayload | null {
+  return decodePracticeResultSharePayload(token);
+}
+
+function readPendingSharedLaunchFromUrl(): PendingSharedLaunch | null {
   if (typeof window === "undefined") return null;
   const params = new URLSearchParams(window.location.search);
-  const token = params.get(PRACTICE_SHARE_QUERY_PARAM);
-  if (!token) return null;
-  return decodePracticeSharePayload(token);
+  const resultToken = params.get(PRACTICE_RESULT_SHARE_QUERY_PARAM);
+  if (resultToken) {
+    const parsed = parseResultSharePayloadFromUrl(resultToken);
+    if (parsed) {
+      return {
+        kind: "result",
+        payload: parsed.p,
+        submittedWord: parsed.a,
+        sharerName: parsed.n,
+        expectedPuzzleFingerprint: buildPracticePuzzleFingerprint(parsed.p)
+      };
+    }
+  }
+
+  const practiceToken = params.get(PRACTICE_SHARE_QUERY_PARAM);
+  if (!practiceToken) return null;
+  const puzzlePayload = decodePracticeSharePayload(practiceToken);
+  if (!puzzlePayload) return null;
+  return {
+    kind: "puzzle",
+    payload: puzzlePayload
+  };
 }
 
 function removePracticeShareFromUrl() {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
-  if (!params.has(PRACTICE_SHARE_QUERY_PARAM)) return;
+  if (!params.has(PRACTICE_SHARE_QUERY_PARAM) && !params.has(PRACTICE_RESULT_SHARE_QUERY_PARAM)) return;
   params.delete(PRACTICE_SHARE_QUERY_PARAM);
+  params.delete(PRACTICE_RESULT_SHARE_QUERY_PARAM);
   const search = params.toString();
   const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
   window.history.replaceState(window.history.state, "", nextUrl);
@@ -284,9 +349,10 @@ export default function App() {
   const [practiceState, setPracticeState] = useState<PracticeModeState>(() =>
     createInactivePracticeState()
   );
-  const [pendingSharedPuzzle, setPendingSharedPuzzle] = useState<PracticeSharePayload | null>(() =>
-    readPracticeSharePayloadFromUrl()
+  const [pendingSharedLaunch, setPendingSharedLaunch] = useState<PendingSharedLaunch | null>(() =>
+    readPendingSharedLaunchFromUrl()
   );
+  const [pendingResultAutoSubmit, setPendingResultAutoSubmit] = useState<PendingResultAutoSubmit | null>(null);
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
   const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
 
@@ -320,6 +386,7 @@ export default function App() {
   const [practiceWord, setPracticeWord] = useState("");
   const [practiceSubmitError, setPracticeSubmitError] = useState<string | null>(null);
   const [practiceShareStatus, setPracticeShareStatus] = useState<"copied" | "failed" | null>(null);
+  const [practiceResultShareStatus, setPracticeResultShareStatus] = useState<"copied" | "failed" | null>(null);
   const [showAllPracticeOptions, setShowAllPracticeOptions] = useState(false);
   const claimInputRef = useRef<HTMLInputElement>(null);
   const practiceInputRef = useRef<HTMLInputElement>(null);
@@ -335,6 +402,7 @@ export default function App() {
   const previousRoomIdRef = useRef<string | null>(null);
   const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
   const practiceShareStatusTimeoutRef = useRef<number | null>(null);
+  const practiceResultShareStatusTimeoutRef = useRef<number | null>(null);
   const editorShareStatusTimeoutRef = useRef<number | null>(null);
 
   const [now, setNow] = useState(Date.now());
@@ -400,6 +468,10 @@ export default function App() {
         window.clearTimeout(practiceShareStatusTimeoutRef.current);
         practiceShareStatusTimeoutRef.current = null;
       }
+      if (practiceResultShareStatusTimeoutRef.current !== null) {
+        window.clearTimeout(practiceResultShareStatusTimeoutRef.current);
+        practiceResultShareStatusTimeoutRef.current = null;
+      }
       if (editorShareStatusTimeoutRef.current !== null) {
         window.clearTimeout(editorShareStatusTimeoutRef.current);
         editorShareStatusTimeoutRef.current = null;
@@ -436,6 +508,7 @@ export default function App() {
       }
 
       if (roomStatusRef.current !== "in-game" || !hasGameStateRef.current) {
+        setPendingResultAutoSubmit(null);
         setLobbyError(message);
         return;
       }
@@ -750,6 +823,17 @@ export default function App() {
     }, 2_500);
   }, []);
 
+  const showPracticeResultShareStatus = useCallback((status: "copied" | "failed") => {
+    setPracticeResultShareStatus(status);
+    if (practiceResultShareStatusTimeoutRef.current !== null) {
+      window.clearTimeout(practiceResultShareStatusTimeoutRef.current);
+    }
+    practiceResultShareStatusTimeoutRef.current = window.setTimeout(() => {
+      setPracticeResultShareStatus(null);
+      practiceResultShareStatusTimeoutRef.current = null;
+    }, 2_500);
+  }, []);
+
   const editorValidationMessage = editorPuzzleDraft.validationMessage ?? editorValidationMessageFromServer;
   const isEditorPuzzleReady = editorPuzzleDraft.payload !== null;
   const editorTotalCharacters = useMemo(() => {
@@ -937,6 +1021,7 @@ export default function App() {
     socket.emit("practice:exit");
     setPracticeWord("");
     setPracticeSubmitError(null);
+    setPendingResultAutoSubmit(null);
   };
 
   const handleSharePracticePuzzle = async () => {
@@ -952,6 +1037,26 @@ export default function App() {
       showPracticeShareStatus("copied");
     } catch {
       showPracticeShareStatus("failed");
+    }
+  };
+
+  const handleSharePracticeResult = async () => {
+    if (!practicePuzzle || !practiceResult || practiceState.phase !== "result") return;
+
+    try {
+      const payload = buildPracticeResultSharePayload(
+        practiceState.currentDifficulty,
+        practicePuzzle,
+        practiceResult.submittedWordNormalized,
+        playerName
+      );
+      const token = encodePracticeResultSharePayload(payload);
+      const shareUrl = new URL(window.location.href);
+      shareUrl.searchParams.set(PRACTICE_RESULT_SHARE_QUERY_PARAM, token);
+      await navigator.clipboard.writeText(shareUrl.toString());
+      showPracticeResultShareStatus("copied");
+    } catch {
+      showPracticeResultShareStatus("failed");
     }
   };
 
@@ -1059,25 +1164,67 @@ export default function App() {
   }, [practiceState.puzzle?.id]);
 
   useEffect(() => {
+    setPracticeResultShareStatus(null);
+  }, [practiceState.puzzle?.id, practiceResult?.submittedWordNormalized]);
+
+  useEffect(() => {
     setEditorValidationMessageFromServer(null);
     setEditorShareStatus(null);
   }, [editorCenterInput, editorExistingWordsInput, editorDifficulty]);
 
   useEffect(() => {
-    if (!pendingSharedPuzzle) return;
+    if (!pendingSharedLaunch) return;
     if (!isConnected) return;
     if (roomState) return;
 
     setLobbyError(null);
-    socket.emit("practice:start", { sharedPuzzle: pendingSharedPuzzle });
-    setPendingSharedPuzzle(null);
+    if (pendingSharedLaunch.kind === "result") {
+      setPendingResultAutoSubmit({
+        submittedWord: pendingSharedLaunch.submittedWord,
+        expectedPuzzleFingerprint: pendingSharedLaunch.expectedPuzzleFingerprint,
+        expiresAt: Date.now() + PENDING_RESULT_AUTO_SUBMIT_TTL_MS
+      });
+    } else {
+      setPendingResultAutoSubmit(null);
+    }
+    socket.emit("practice:start", { sharedPuzzle: pendingSharedLaunch.payload });
+    setPendingSharedLaunch(null);
     removePracticeShareFromUrl();
-  }, [pendingSharedPuzzle, isConnected, roomState]);
+  }, [pendingSharedLaunch, isConnected, roomState]);
+
+  useEffect(() => {
+    if (!pendingResultAutoSubmit) return;
+    if (pendingResultAutoSubmit.expiresAt <= now) {
+      setPendingResultAutoSubmit(null);
+      return;
+    }
+    if (!isConnected) return;
+    if (roomState) return;
+    if (!practiceState.active || practiceState.phase !== "puzzle") return;
+
+    const puzzleFingerprint = buildPracticePuzzleFingerprintFromState(practiceState.puzzle);
+    if (!puzzleFingerprint) return;
+    if (puzzleFingerprint !== pendingResultAutoSubmit.expectedPuzzleFingerprint) return;
+
+    setLobbyError(null);
+    setPracticeSubmitError(null);
+    socket.emit("practice:submit", { word: pendingResultAutoSubmit.submittedWord });
+    setPendingResultAutoSubmit(null);
+  }, [
+    pendingResultAutoSubmit,
+    now,
+    isConnected,
+    roomState,
+    practiceState.active,
+    practiceState.phase,
+    practiceState.puzzle
+  ]);
 
   useEffect(() => {
     if (roomState) {
       setJoinPrompt(null);
       setLobbyError(null);
+      setPendingResultAutoSubmit(null);
       return;
     }
     setLobbyView("list");
@@ -1635,6 +1782,17 @@ export default function App() {
                         : practiceShareStatus === "failed"
                           ? "Copy failed"
                           : "Share"}
+                    </button>
+                  </div>
+                )}
+                {practicePuzzle && practiceState.phase === "result" && practiceResult && (
+                  <div className="practice-share-action">
+                    <button className="button-secondary" type="button" onClick={handleSharePracticeResult}>
+                      {practiceResultShareStatus === "copied"
+                        ? "Copied!"
+                        : practiceResultShareStatus === "failed"
+                          ? "Copy failed"
+                          : "Share result"}
                     </button>
                   </div>
                 )}
