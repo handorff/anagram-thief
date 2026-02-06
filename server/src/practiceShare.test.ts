@@ -1,0 +1,134 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { PracticePuzzle, PracticeSharePayload } from "../../shared/types.js";
+import {
+  buildPracticeSharePayload,
+  decodePracticeSharePayload,
+  encodePracticeSharePayload
+} from "../../shared/practiceShare.js";
+import { createPracticeEngine } from "./practice.js";
+import { materializeSharedPracticePuzzle, resolvePracticeStartRequest } from "./practiceShare.js";
+
+function buildPuzzle(center: string, existingWords: string[]): PracticePuzzle {
+  return {
+    id: "puzzle",
+    centerTiles: center.split("").map((letter, index) => ({
+      id: `center-${index}`,
+      letter
+    })),
+    existingWords: existingWords.map((word, index) => ({
+      id: `existing-${index}`,
+      text: word
+    }))
+  };
+}
+
+test("share payload round-trip encodes and decodes puzzle content", () => {
+  const payload = buildPracticeSharePayload(4, buildPuzzle("team", ["Rate", "stare"]));
+  assert.deepEqual(payload, {
+    v: 1,
+    d: 4,
+    c: "TEAM",
+    w: ["RATE", "STARE"]
+  });
+
+  const token = encodePracticeSharePayload(payload);
+  const decoded = decodePracticeSharePayload(token);
+  assert.deepEqual(decoded, payload);
+});
+
+test("share payload decode returns null for invalid tokens", () => {
+  assert.equal(decodePracticeSharePayload(""), null);
+  assert.equal(decodePracticeSharePayload("1.3.TEAM"), null);
+  assert.equal(decodePracticeSharePayload("2.3.TEAM.RATE"), null);
+  assert.equal(decodePracticeSharePayload("1.6.TEAM.RATE"), null);
+  assert.equal(decodePracticeSharePayload("1.3.TEAM.RA7E"), null);
+});
+
+test("materializeSharedPracticePuzzle accepts valid share payload", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+  const payload: PracticeSharePayload = {
+    v: 1,
+    d: 5,
+    c: "TEAM",
+    w: []
+  };
+
+  const materialized = materializeSharedPracticePuzzle(payload, (puzzle) => engine.solvePuzzle(puzzle));
+  assert.ok(materialized);
+  assert.equal(materialized.difficulty, 5);
+  assert.deepEqual(
+    materialized.puzzle.centerTiles.map((tile) => tile.letter),
+    ["T", "E", "A", "M"]
+  );
+  assert.deepEqual(materialized.puzzle.existingWords, []);
+});
+
+test("materializeSharedPracticePuzzle rejects invalid payload bounds", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+
+  assert.equal(
+    materializeSharedPracticePuzzle({ v: 1, d: 3, c: "", w: [] }, (puzzle) => engine.solvePuzzle(puzzle)),
+    null
+  );
+  assert.equal(
+    materializeSharedPracticePuzzle({ v: 1, d: 3, c: "TEAM", w: Array(9).fill("RATE") }, (puzzle) =>
+      engine.solvePuzzle(puzzle)
+    ),
+    null
+  );
+  assert.equal(
+    materializeSharedPracticePuzzle({ v: 1, d: 3, c: "TEAM", w: ["CAT"] }, (puzzle) => engine.solvePuzzle(puzzle)),
+    null
+  );
+});
+
+test("materializeSharedPracticePuzzle rejects unsolvable shared puzzles", () => {
+  const dictionary = new Set(["TEAM", "MATE"]);
+  const engine = createPracticeEngine(dictionary);
+
+  const materialized = materializeSharedPracticePuzzle(
+    { v: 1, d: 2, c: "ZZZZ", w: [] },
+    (puzzle) => engine.solvePuzzle(puzzle)
+  );
+  assert.equal(materialized, null);
+});
+
+test("resolvePracticeStartRequest uses shared puzzle for practice:start payload", () => {
+  const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
+  const engine = createPracticeEngine(dictionary);
+  const payload: PracticeSharePayload = {
+    v: 1,
+    d: 4,
+    c: "TEAM",
+    w: []
+  };
+
+  let generatedCalls = 0;
+  const generatedPuzzle = buildPuzzle("ZZZZ", []);
+
+  const resolved = resolvePracticeStartRequest(
+    {
+      difficulty: 1,
+      sharedPuzzle: payload
+    },
+    {
+      generatePuzzle: () => {
+        generatedCalls += 1;
+        return generatedPuzzle;
+      },
+      solvePuzzle: (puzzle) => engine.solvePuzzle(puzzle)
+    }
+  );
+
+  assert.equal(resolved.isShared, true);
+  assert.equal(resolved.difficulty, 4);
+  assert.equal(generatedCalls, 0);
+  assert.deepEqual(
+    resolved.puzzle.centerTiles.map((tile) => tile.letter),
+    ["T", "E", "A", "M"]
+  );
+  assert.deepEqual(resolved.puzzle.existingWords.map((word) => word.text), []);
+});

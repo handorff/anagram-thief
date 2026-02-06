@@ -5,14 +5,22 @@ import type {
   Player,
   PracticeDifficulty,
   PracticeModeState,
+  PracticeResult,
   PracticeScoredWord,
+  PracticeSharePayload,
   RoomState,
   RoomSummary
 } from "@shared/types";
+import {
+  buildPracticeSharePayload,
+  decodePracticeSharePayload,
+  encodePracticeSharePayload
+} from "@shared/practiceShare";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const SESSION_STORAGE_KEY = "anagram.sessionId";
 const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
+const PRACTICE_SHARE_QUERY_PARAM = "practice";
 
 function generateId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -53,6 +61,24 @@ function getOrCreateSessionId() {
   } catch {
     return generateId();
   }
+}
+
+function readPracticeSharePayloadFromUrl(): PracticeSharePayload | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get(PRACTICE_SHARE_QUERY_PARAM);
+  if (!token) return null;
+  return decodePracticeSharePayload(token);
+}
+
+function removePracticeShareFromUrl() {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has(PRACTICE_SHARE_QUERY_PARAM)) return;
+  params.delete(PRACTICE_SHARE_QUERY_PARAM);
+  const search = params.toString();
+  const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
+  window.history.replaceState(window.history.state, "", nextUrl);
 }
 
 const sessionId = getOrCreateSessionId();
@@ -238,6 +264,9 @@ export default function App() {
   const [practiceState, setPracticeState] = useState<PracticeModeState>(() =>
     createInactivePracticeState()
   );
+  const [pendingSharedPuzzle, setPendingSharedPuzzle] = useState<PracticeSharePayload | null>(() =>
+    readPracticeSharePayloadFromUrl()
+  );
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
   const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
 
@@ -263,6 +292,7 @@ export default function App() {
   const [claimWord, setClaimWord] = useState("");
   const [practiceWord, setPracticeWord] = useState("");
   const [practiceSubmitError, setPracticeSubmitError] = useState<string | null>(null);
+  const [practiceShareStatus, setPracticeShareStatus] = useState<"copied" | "failed" | null>(null);
   const [showAllPracticeOptions, setShowAllPracticeOptions] = useState(false);
   const claimInputRef = useRef<HTMLInputElement>(null);
   const practiceInputRef = useRef<HTMLInputElement>(null);
@@ -277,6 +307,7 @@ export default function App() {
   });
   const previousRoomIdRef = useRef<string | null>(null);
   const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const practiceShareStatusTimeoutRef = useRef<number | null>(null);
 
   const [now, setNow] = useState(Date.now());
 
@@ -332,6 +363,15 @@ export default function App() {
     return () => {
       claimAnimationTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       claimAnimationTimeoutsRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (practiceShareStatusTimeoutRef.current !== null) {
+        window.clearTimeout(practiceShareStatusTimeoutRef.current);
+        practiceShareStatusTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -564,6 +604,17 @@ export default function App() {
     };
   }, [practiceResult, showAllPracticeOptions]);
 
+  const showPracticeShareStatus = useCallback((status: "copied" | "failed") => {
+    setPracticeShareStatus(status);
+    if (practiceShareStatusTimeoutRef.current !== null) {
+      window.clearTimeout(practiceShareStatusTimeoutRef.current);
+    }
+    practiceShareStatusTimeoutRef.current = window.setTimeout(() => {
+      setPracticeShareStatus(null);
+      practiceShareStatusTimeoutRef.current = null;
+    }, 2_500);
+  }, []);
+
   const handleCreate = () => {
     if (!playerName) return;
     if (practiceState.active) return;
@@ -661,6 +712,22 @@ export default function App() {
     socket.emit("practice:exit");
     setPracticeWord("");
     setPracticeSubmitError(null);
+  };
+
+  const handleSharePracticePuzzle = async () => {
+    if (!practicePuzzle) return;
+
+    const payload = buildPracticeSharePayload(practiceState.currentDifficulty, practicePuzzle);
+    const token = encodePracticeSharePayload(payload);
+    const shareUrl = new URL(window.location.href);
+    shareUrl.searchParams.set(PRACTICE_SHARE_QUERY_PARAM, token);
+
+    try {
+      await navigator.clipboard.writeText(shareUrl.toString());
+      showPracticeShareStatus("copied");
+    } catch {
+      showPracticeShareStatus("failed");
+    }
   };
 
   const handleLeaveRoom = () => {
@@ -761,6 +828,20 @@ export default function App() {
   useEffect(() => {
     setShowAllPracticeOptions(false);
   }, [practiceState.puzzle?.id, practiceResult?.submittedWordNormalized, practiceResult?.score]);
+
+  useEffect(() => {
+    setPracticeShareStatus(null);
+  }, [practiceState.puzzle?.id]);
+
+  useEffect(() => {
+    if (!pendingSharedPuzzle) return;
+    if (!isConnected) return;
+    if (roomState) return;
+
+    socket.emit("practice:start", { sharedPuzzle: pendingSharedPuzzle });
+    setPendingSharedPuzzle(null);
+    removePracticeShareFromUrl();
+  }, [pendingSharedPuzzle, isConnected, roomState]);
 
   useEffect(() => {
     if (roomState) {
@@ -1210,6 +1291,17 @@ export default function App() {
                 <p className="muted">Current puzzle difficulty: {practiceState.currentDifficulty}</p>
               </div>
               <div className="practice-header-actions">
+                {practicePuzzle && (
+                  <div className="practice-share-action">
+                    <button className="button-secondary" type="button" onClick={handleSharePracticePuzzle}>
+                      {practiceShareStatus === "copied"
+                        ? "Copied!"
+                        : practiceShareStatus === "failed"
+                          ? "Copy failed"
+                          : "Share"}
+                    </button>
+                  </div>
+                )}
                 {practiceState.phase === "result" && practiceResult && (
                   <>
                     <div className="practice-difficulty-control" aria-label="Next puzzle difficulty">

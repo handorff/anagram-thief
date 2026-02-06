@@ -90,6 +90,18 @@ export interface PracticePuzzle {
   existingWords: PracticeExistingWord[];
 }
 
+export interface PracticeSharePayload {
+  v: 1;
+  d: PracticeDifficulty;
+  c: string;
+  w: string[];
+}
+
+export interface PracticeStartRequest {
+  difficulty?: PracticeDifficulty;
+  sharedPuzzle?: PracticeSharePayload;
+}
+
 export interface PracticeScoredWord {
   word: string;
   score: number;

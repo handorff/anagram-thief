@@ -14,6 +14,7 @@ import type {
   PracticeModeState,
   PracticePuzzle,
   PracticeResult,
+  PracticeStartRequest,
   RoomState,
   RoomSummary,
   Tile,
@@ -26,6 +27,7 @@ import {
   createPracticeEngine,
   DEFAULT_PRACTICE_DIFFICULTY
 } from "./practice.js";
+import { resolvePracticeStartRequest } from "./practiceShare.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -804,7 +806,7 @@ io.on("connection", (socket) => {
     socket.emit("room:list", Array.from(rooms.values()).map(getRoomSummary));
   });
 
-  socket.on("practice:start", ({ difficulty }: { difficulty?: PracticeDifficulty }) => {
+  socket.on("practice:start", (request: PracticeStartRequest = {}) => {
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
@@ -815,8 +817,10 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const resolvedDifficulty = clampPracticeDifficulty(difficulty);
-    const puzzle = practiceEngine.generatePuzzle(resolvedDifficulty);
+    const { difficulty: resolvedDifficulty, puzzle } = resolvePracticeStartRequest(request, {
+      generatePuzzle: (difficulty) => practiceEngine.generatePuzzle(difficulty),
+      solvePuzzle: (candidatePuzzle) => practiceEngine.solvePuzzle(candidatePuzzle)
+    });
     const nextState: PracticeModeStateInternal = {
       active: true,
       phase: "puzzle",
