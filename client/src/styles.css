@@ -380,6 +380,10 @@ button:disabled {
   transition: width 0.1s linear;
 }
 
+.claim-timer.placeholder {
+  visibility: hidden;
+}
+
 .claim-input {
   display: flex;
   gap: 0.75rem;

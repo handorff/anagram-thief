@@ -984,18 +984,20 @@ export default function App() {
             </div>
 
             <div className="claim-box">
-              {claimWindow && (
+              <div
+                className={`claim-timer ${claimWindow ? "" : "placeholder"}`}
+                role={claimWindow ? "progressbar" : undefined}
+                aria-label={claimWindow ? "Claim timer" : undefined}
+                aria-valuemin={claimWindow ? 0 : undefined}
+                aria-valuemax={claimWindow ? 100 : undefined}
+                aria-valuenow={claimWindow ? Math.round(claimProgress * 100) : undefined}
+                aria-hidden={!claimWindow}
+              >
                 <div
-                  className="claim-timer"
-                  role="progressbar"
-                  aria-label="Claim timer"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(claimProgress * 100)}
-                >
-                  <div className="claim-progress" style={{ width: `${claimProgress * 100}%` }} />
-                </div>
-              )}
+                  className="claim-progress"
+                  style={{ width: `${claimWindow ? claimProgress * 100 : 0}%` }}
+                />
+              </div>
               <div className="claim-input">
                 <input
                   ref={claimInputRef}
