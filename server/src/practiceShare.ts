@@ -42,7 +42,7 @@ export function materializeSharedPracticePuzzle(
 ): { difficulty: PracticeDifficulty; puzzle: PracticePuzzle } | null {
   if (!sharedPuzzle || typeof sharedPuzzle !== "object") return null;
   const payload = sharedPuzzle as Partial<PracticeSharePayload>;
-  if (payload.v !== 1) return null;
+  if (payload.v !== 2) return null;
 
   const difficultyRaw = payload.d;
   if (typeof difficultyRaw !== "number" || !Number.isFinite(difficultyRaw)) return null;

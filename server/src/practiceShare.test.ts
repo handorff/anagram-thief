@@ -26,7 +26,7 @@ function buildPuzzle(center: string, existingWords: string[]): PracticePuzzle {
 test("share payload round-trip encodes and decodes puzzle content", () => {
   const payload = buildPracticeSharePayload(4, buildPuzzle("team", ["Rate", "stare"]));
   assert.deepEqual(payload, {
-    v: 1,
+    v: 2,
     d: 4,
     c: "TEAM",
     w: ["RATE", "STARE"]
@@ -39,17 +39,17 @@ test("share payload round-trip encodes and decodes puzzle content", () => {
 
 test("share payload decode returns null for invalid tokens", () => {
   assert.equal(decodePracticeSharePayload(""), null);
-  assert.equal(decodePracticeSharePayload("1.3.TEAM"), null);
+  assert.equal(decodePracticeSharePayload("1.3.TEAM.RATE"), null);
   assert.equal(decodePracticeSharePayload("2.3.TEAM.RATE"), null);
-  assert.equal(decodePracticeSharePayload("1.6.TEAM.RATE"), null);
-  assert.equal(decodePracticeSharePayload("1.3.TEAM.RA7E"), null);
+  assert.equal(decodePracticeSharePayload("$$$$"), null);
+  assert.equal(decodePracticeSharePayload("a"), null);
 });
 
 test("materializeSharedPracticePuzzle accepts valid share payload", () => {
   const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
   const engine = createPracticeEngine(dictionary);
   const payload: PracticeSharePayload = {
-    v: 1,
+    v: 2,
     d: 5,
     c: "TEAM",
     w: []
@@ -70,17 +70,17 @@ test("materializeSharedPracticePuzzle rejects invalid payload bounds", () => {
   const engine = createPracticeEngine(dictionary);
 
   assert.equal(
-    materializeSharedPracticePuzzle({ v: 1, d: 3, c: "", w: [] }, (puzzle) => engine.solvePuzzle(puzzle)),
+    materializeSharedPracticePuzzle({ v: 2, d: 3, c: "", w: [] }, (puzzle) => engine.solvePuzzle(puzzle)),
     null
   );
   assert.equal(
-    materializeSharedPracticePuzzle({ v: 1, d: 3, c: "TEAM", w: Array(9).fill("RATE") }, (puzzle) =>
+    materializeSharedPracticePuzzle({ v: 2, d: 3, c: "TEAM", w: Array(9).fill("RATE") }, (puzzle) =>
       engine.solvePuzzle(puzzle)
     ),
     null
   );
   assert.equal(
-    materializeSharedPracticePuzzle({ v: 1, d: 3, c: "TEAM", w: ["CAT"] }, (puzzle) => engine.solvePuzzle(puzzle)),
+    materializeSharedPracticePuzzle({ v: 2, d: 3, c: "TEAM", w: ["CAT"] }, (puzzle) => engine.solvePuzzle(puzzle)),
     null
   );
 });
@@ -90,7 +90,7 @@ test("materializeSharedPracticePuzzle rejects unsolvable shared puzzles", () => 
   const engine = createPracticeEngine(dictionary);
 
   const materialized = materializeSharedPracticePuzzle(
-    { v: 1, d: 2, c: "ZZZZ", w: [] },
+    { v: 2, d: 2, c: "ZZZZ", w: [] },
     (puzzle) => engine.solvePuzzle(puzzle)
   );
   assert.equal(materialized, null);
@@ -100,7 +100,7 @@ test("resolvePracticeStartRequest uses shared puzzle for practice:start payload"
   const dictionary = new Set(["TEAM", "MATE", "MEAT", "TAME"]);
   const engine = createPracticeEngine(dictionary);
   const payload: PracticeSharePayload = {
-    v: 1,
+    v: 2,
     d: 4,
     c: "TEAM",
     w: []

@@ -91,7 +91,7 @@ export interface PracticePuzzle {
 }
 
 export interface PracticeSharePayload {
-  v: 1;
+  v: 2;
   d: PracticeDifficulty;
   c: string;
   w: string[];
