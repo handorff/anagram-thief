@@ -358,6 +358,42 @@ button:disabled {
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.4);
 }
 
+.tile-reveal-card {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #f8fafc;
+  background:
+    linear-gradient(140deg, rgba(248, 250, 252, 0.34), rgba(56, 189, 248, 0.16)),
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 163, 184, 0.55) 0 7px,
+      rgba(100, 116, 139, 0.55) 7px 14px
+    );
+  border: 1px solid rgba(248, 250, 252, 0.4);
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.55);
+  transform-style: preserve-3d;
+  animation-name: tile-reveal-flip;
+  animation-timing-function: ease-in-out;
+  animation-fill-mode: both;
+}
+
+@keyframes tile-reveal-flip {
+  0% {
+    transform: perspective(480px) rotateY(0deg) scale(0.95);
+    filter: brightness(0.92);
+  }
+
+  45% {
+    transform: perspective(480px) rotateY(90deg) scale(1.05);
+    filter: brightness(1.12);
+  }
+
+  100% {
+    transform: perspective(480px) rotateY(180deg) scale(0.96);
+    filter: brightness(0.96);
+  }
+}
+
 .claim-box {
   padding-top: 1rem;
   display: flex;

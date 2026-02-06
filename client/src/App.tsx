@@ -69,6 +69,7 @@ const MAX_FLIP_TIMER_SECONDS = 60;
 const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
+const DEFAULT_FLIP_REVEAL_MS = 1_000;
 const MAX_LOG_ENTRIES = 300;
 const CLAIM_FAILURE_WINDOW_MS = 4_000;
 const CLAIM_FAILURE_MESSAGES = new Set([
@@ -316,6 +317,18 @@ export default function App() {
 
   const isHost = roomState?.hostId === selfPlayerId;
   const isInGame = roomState?.status === "in-game" && gameState;
+  const pendingFlip = gameState?.pendingFlip ?? null;
+  const isFlipRevealActive = pendingFlip !== null;
+  const flipRevealDurationMs = pendingFlip
+    ? Math.max(1, pendingFlip.revealsAt - pendingFlip.startedAt)
+    : DEFAULT_FLIP_REVEAL_MS;
+  const flipRevealElapsedMs = pendingFlip
+    ? Math.max(0, Math.min(flipRevealDurationMs, now - pendingFlip.startedAt))
+    : 0;
+  const flipRevealPlayerName = useMemo(() => {
+    if (!pendingFlip || !gameState) return "Unknown";
+    return getPlayerName(gameState.players, pendingFlip.playerId);
+  }, [pendingFlip, gameState]);
   const claimWindow = gameState?.claimWindow ?? null;
   const isMyClaimWindow = claimWindow?.playerId === selfPlayerId;
   const claimTimerSeconds = roomState?.claimTimer.seconds ?? DEFAULT_CLAIM_TIMER_SECONDS;
@@ -343,6 +356,9 @@ export default function App() {
     return gameState.players.find((player) => player.id === claimWindow.playerId)?.name ?? "Unknown";
   }, [claimWindow, gameState]);
   const claimStatus = useMemo(() => {
+    if (isFlipRevealActive) {
+      return `${flipRevealPlayerName} is revealing a tile...`;
+    }
     if (claimWindow && claimWindowRemainingSeconds !== null) {
       if (isMyClaimWindow) {
         return `Your claim window: ${claimWindowRemainingSeconds}s`;
@@ -354,6 +370,8 @@ export default function App() {
     }
     return "Press enter to claim a word";
   }, [
+    isFlipRevealActive,
+    flipRevealPlayerName,
     claimWindow,
     claimWindowRemainingSeconds,
     isMyClaimWindow,
@@ -364,9 +382,9 @@ export default function App() {
   const claimPlaceholder = claimStatus;
   const claimButtonLabel = isMyClaimWindow ? "Submit Claim" : "Start Claim";
   const isClaimButtonDisabled = isMyClaimWindow
-    ? !claimWord.trim()
-    : Boolean(claimWindow) || isClaimCooldownActive;
-  const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive;
+    ? !claimWord.trim() || isFlipRevealActive
+    : Boolean(claimWindow) || isClaimCooldownActive || isFlipRevealActive;
+  const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive;
   const shouldShowGameLog =
     Boolean(gameState) && (roomState?.status === "in-game" || roomState?.status === "ended");
   const gameOverStandings = useMemo(() => {
@@ -473,15 +491,17 @@ export default function App() {
 
   const handleFlip = useCallback(() => {
     if (!roomId) return;
+    if (isFlipRevealActive) return;
     socket.emit("game:flip", { roomId });
-  }, [roomId]);
+  }, [roomId, isFlipRevealActive]);
 
   const handleClaimIntent = useCallback(() => {
     if (!roomId) return;
+    if (isFlipRevealActive) return;
     if (claimWindow || isClaimCooldownActive) return;
     claimInputRef.current?.focus();
     socket.emit("game:claim-intent", { roomId });
-  }, [roomId, claimWindow, isClaimCooldownActive]);
+  }, [roomId, isFlipRevealActive, claimWindow, isClaimCooldownActive]);
 
   const handleClaimSubmit = useCallback(() => {
     if (!roomState) return;
@@ -527,6 +547,7 @@ export default function App() {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       const isSpace = event.code === "Space" || event.key === " " || event.key === "Spacebar";
       if (isSpace) {
+        if (isFlipRevealActive) return;
         if (gameState?.turnPlayerId !== selfPlayerId) return;
         event.preventDefault();
         handleFlip();
@@ -539,6 +560,9 @@ export default function App() {
           return;
         }
         if (claimWindow || isClaimCooldownActive) {
+          return;
+        }
+        if (isFlipRevealActive) {
           return;
         }
         event.preventDefault();
@@ -556,7 +580,8 @@ export default function App() {
     selfPlayerId,
     isMyClaimWindow,
     claimWindow,
-    isClaimCooldownActive
+    isClaimCooldownActive,
+    isFlipRevealActive
   ]);
 
   useEffect(() => {
@@ -604,7 +629,8 @@ export default function App() {
     const previousCenterTileIds = new Set(previousState.centerTiles.map((tile) => tile.id));
     const addedTiles = gameState.centerTiles.filter((tile) => !previousCenterTileIds.has(tile.id));
     if (addedTiles.length > 0 && gameState.bagCount < previousState.bagCount) {
-      const flipperName = getPlayerName(previousState.players, previousState.turnPlayerId);
+      const flipperId = previousState.pendingFlip?.playerId ?? previousState.turnPlayerId;
+      const flipperName = getPlayerName(previousState.players, flipperId);
       for (const tile of addedTiles) {
         pendingEntries.push({ text: `${flipperName} flipped ${tile.letter}.`, kind: "event" });
       }
@@ -964,7 +990,10 @@ export default function App() {
                 <strong>
                   {gameState.players.find((p) => p.id === gameState.turnPlayerId)?.name || "Unknown"}
                 </strong>
-                <button onClick={handleFlip} disabled={gameState.turnPlayerId !== selfPlayerId}>
+                <button
+                  onClick={handleFlip}
+                  disabled={gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive}
+                >
                   Flip Tile
                 </button>
               </div>
@@ -975,12 +1004,27 @@ export default function App() {
             )}
 
             <div className="tiles">
-              {gameState.centerTiles.length === 0 && <div className="muted">No tiles flipped yet.</div>}
+              {gameState.centerTiles.length === 0 && !pendingFlip && (
+                <div className="muted">No tiles flipped yet.</div>
+              )}
               {gameState.centerTiles.map((tile) => (
                 <div key={tile.id} className="tile">
                   {tile.letter}
                 </div>
               ))}
+              {pendingFlip && (
+                <div
+                  className="tile tile-reveal-card"
+                  style={{
+                    animationDuration: `${flipRevealDurationMs}ms`,
+                    animationDelay: `-${flipRevealElapsedMs}ms`
+                  }}
+                  aria-live="polite"
+                  aria-label={`${flipRevealPlayerName} is revealing the next tile`}
+                >
+                  ?
+                </div>
+              )}
             </div>
 
             <div className="claim-box">

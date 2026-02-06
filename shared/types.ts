@@ -57,6 +57,12 @@ export interface ClaimWindowState {
   endsAt: number;
 }
 
+export interface PendingFlipState {
+  playerId: string;
+  startedAt: number;
+  revealsAt: number;
+}
+
 export interface GameState {
   roomId: string;
   status: "in-game" | "ended";
@@ -68,4 +74,5 @@ export interface GameState {
   endTimerEndsAt?: number;
   claimWindow: ClaimWindowState | null;
   claimCooldowns: Record<string, number>;
+  pendingFlip: PendingFlipState | null;
 }

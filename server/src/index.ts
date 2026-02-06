@@ -6,7 +6,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
-import type { GameState, Player, RoomState, RoomSummary, Tile, Word } from "../../shared/types.js";
+import type {
+  GameState,
+  PendingFlipState,
+  Player,
+  RoomState,
+  RoomSummary,
+  Tile,
+  Word
+} from "../../shared/types.js";
 import { createTileBag } from "../../shared/tileBag.js";
 import { isValidWord, loadWordSet, normalizeWord } from "../../shared/wordValidation.js";
 
@@ -21,6 +29,7 @@ const MAX_FLIP_TIMER_SECONDS = 60;
 const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
+const FLIP_REVEAL_MS = 1_000;
 const CLAIM_COOLDOWN_MS = 10_000;
 const MAX_PLAYERS = 8;
 
@@ -86,6 +95,8 @@ type GameStateInternal = {
   flipTimerTimeout?: NodeJS.Timeout;
   flipTimerEndsAt?: number;
   flipTimerToken?: string;
+  pendingFlip: (PendingFlipState & { token: string }) | null;
+  pendingFlipTimeout?: NodeJS.Timeout;
   claimTimer: {
     seconds: number;
   };
@@ -246,7 +257,14 @@ function emitGameState(roomId: string) {
     claimWindow: game.claimWindow
       ? { playerId: game.claimWindow.playerId, endsAt: game.claimWindow.endsAt }
       : null,
-    claimCooldowns: game.claimCooldowns
+    claimCooldowns: game.claimCooldowns,
+    pendingFlip: game.pendingFlip
+      ? {
+          playerId: game.pendingFlip.playerId,
+          startedAt: game.pendingFlip.startedAt,
+          revealsAt: game.pendingFlip.revealsAt
+        }
+      : null
   };
   io.to(roomId).emit("game:state", publicState);
 }
@@ -321,11 +339,20 @@ function clearFlipTimer(game: GameStateInternal) {
   game.flipTimerToken = undefined;
 }
 
+function clearPendingFlip(game: GameStateInternal) {
+  if (game.pendingFlipTimeout) {
+    clearTimeout(game.pendingFlipTimeout);
+    game.pendingFlipTimeout = undefined;
+  }
+  game.pendingFlip = null;
+}
+
 function scheduleFlipTimer(game: GameStateInternal) {
   clearFlipTimer(game);
   if (!game.flipTimer.enabled) return;
   if (game.status !== "in-game") return;
   if (game.bag.length === 0) return;
+  if (game.pendingFlip) return;
 
   const token = randomUUID();
   const turnPlayerId = game.turnPlayerId;
@@ -341,7 +368,7 @@ function scheduleFlipTimer(game: GameStateInternal) {
       if (!current.flipTimer.enabled) return;
       if (current.flipTimerToken !== token) return;
       if (current.turnPlayerId !== turnPlayerId) return;
-      if (!performFlip(current)) return;
+      if (!beginPendingFlip(current, turnPlayerId)) return;
       emitGameState(current.roomId);
     });
   }, durationMs);
@@ -363,6 +390,7 @@ function clearClaimWindow(game: GameStateInternal) {
 
 function clearGameTimers(game: GameStateInternal) {
   clearFlipTimer(game);
+  clearPendingFlip(game);
   clearClaimWindow(game);
   clearAllClaimCooldowns(game);
   clearEndTimer(game);
@@ -432,6 +460,7 @@ function scheduleEndTimer(game: GameStateInternal) {
     clearTimeout(game.endTimer);
   }
   clearFlipTimer(game);
+  clearPendingFlip(game);
   game.endTimerEndsAt = Date.now() + END_TIMER_MS;
   game.endTimer = setTimeout(() => {
     clearClaimWindow(game);
@@ -447,13 +476,49 @@ function scheduleEndTimer(game: GameStateInternal) {
   }, END_TIMER_MS);
 }
 
-function performFlip(game: GameStateInternal): boolean {
+function beginPendingFlip(game: GameStateInternal, playerId: string): boolean {
+  if (game.status !== "in-game") return false;
+  if (game.pendingFlip) return false;
   if (game.bag.length === 0) return false;
+  clearFlipTimer(game);
+
+  const token = randomUUID();
+  const startedAt = Date.now();
+  const revealsAt = startedAt + FLIP_REVEAL_MS;
+  game.pendingFlip = {
+    token,
+    playerId,
+    startedAt,
+    revealsAt
+  };
+
+  game.pendingFlipTimeout = setTimeout(() => {
+    enqueue(game.roomId, () => {
+      const current = games.get(game.roomId);
+      if (!current) return;
+      if (!current.pendingFlip || current.pendingFlip.token !== token) return;
+      if (!revealPendingFlip(current, token)) return;
+      emitGameState(current.roomId);
+    });
+  }, FLIP_REVEAL_MS);
+
+  return true;
+}
+
+function revealPendingFlip(game: GameStateInternal, token: string): boolean {
+  if (!game.pendingFlip || game.pendingFlip.token !== token) return false;
+  const pendingFlip = game.pendingFlip;
+  clearPendingFlip(game);
+  if (game.status !== "in-game") return false;
+  if (game.bag.length === 0) return false;
+
   const tile = game.bag.shift();
   if (!tile) return false;
   game.centerTiles.push(tile);
   clearAllClaimCooldowns(game);
-  advanceTurn(game);
+  if (game.turnPlayerId === pendingFlip.playerId) {
+    advanceTurn(game);
+  }
 
   if (game.bag.length === 0) {
     scheduleEndTimer(game);
@@ -969,6 +1034,7 @@ io.on("connection", (socket) => {
       claimTimer: {
         seconds: clampClaimTimerSeconds(claimTimer.seconds)
       },
+      pendingFlip: null,
       claimWindow: null,
       claimCooldowns: {},
       claimCooldownTimeouts: new Map()
@@ -1016,11 +1082,15 @@ io.on("connection", (socket) => {
         emitError(socket, "Game has ended.");
         return;
       }
+      if (game.pendingFlip) {
+        emitError(socket, "A tile is already being revealed.");
+        return;
+      }
       if (game.turnPlayerId !== playerId) {
         emitError(socket, "Not your turn to flip.");
         return;
       }
-      if (!performFlip(game)) {
+      if (!beginPendingFlip(game, playerId)) {
         emitError(socket, "No tiles left to flip.");
         return;
       }
@@ -1044,6 +1114,10 @@ io.on("connection", (socket) => {
       }
       if (game.status !== "in-game") {
         emitError(socket, "Game has ended.");
+        return;
+      }
+      if (game.pendingFlip) {
+        emitError(socket, "Wait for the current tile reveal to finish.");
         return;
       }
 
@@ -1096,6 +1170,10 @@ io.on("connection", (socket) => {
         }
         if (game.status !== "in-game") {
           emitError(socket, "Game has ended.");
+          return;
+        }
+        if (game.pendingFlip) {
+          emitError(socket, "Wait for the current tile reveal to finish.");
           return;
         }
 
