@@ -38,6 +38,10 @@ h1, h2, h3 {
   gap: 2rem;
 }
 
+.page.has-game-log {
+  padding-bottom: 8.5rem;
+}
+
 .name-gate {
   min-height: 100vh;
   display: grid;
@@ -283,6 +287,11 @@ button:disabled {
   border: 1px solid rgba(56, 189, 248, 0.6);
 }
 
+.player.winner {
+  border: 1px solid rgba(250, 204, 21, 0.8);
+  background: rgba(250, 204, 21, 0.15);
+}
+
 .badge {
   margin-left: 0.5rem;
   font-size: 0.7rem;
@@ -290,6 +299,12 @@ button:disabled {
   border-radius: 999px;
   background: rgba(56, 189, 248, 0.2);
   border: 1px solid rgba(56, 189, 248, 0.5);
+}
+
+.winner-badge {
+  background: rgba(250, 204, 21, 0.28);
+  border-color: rgba(250, 204, 21, 0.72);
+  color: #fde68a;
 }
 
 .game {
@@ -470,20 +485,19 @@ button:disabled {
 }
 
 .game-log {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  padding: 0.55rem 0.75rem 0.75rem;
+  background: transparent;
+  border-top: 1px solid rgba(248, 250, 252, 0.32);
+  border-radius: 0;
+  backdrop-filter: none;
+  display: flex;
+  flex-direction: column;
   gap: 0.9rem;
-}
-
-.game-log-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.game-log-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
 }
 
 .game-log-list {
@@ -491,25 +505,8 @@ button:disabled {
   flex-direction: column;
   gap: 0.45rem;
   position: relative;
-}
-
-.game-log-list.collapsed {
-  overflow: hidden;
-}
-
-.game-log-list.collapsed::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2.25rem;
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.95));
-  pointer-events: none;
-}
-
-.game-log-list.expanded {
-  max-height: 320px;
+  width: 100%;
+  max-height: calc((3 * 1.55rem) + (2 * 0.45rem));
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 0.35rem;
@@ -519,15 +516,11 @@ button:disabled {
   display: flex;
   gap: 0.7rem;
   align-items: flex-start;
-  padding: 0.5rem 0.65rem;
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.1rem 0;
 }
 
 .game-log-row.error {
-  background: rgba(244, 63, 94, 0.2);
-  border-color: rgba(244, 63, 94, 0.5);
+  color: #fecdd3;
 }
 
 .game-log-time {
@@ -549,6 +542,10 @@ button:disabled {
 }
 
 @media (max-width: 960px) {
+  .page.has-game-log {
+    padding-bottom: 9.5rem;
+  }
+
   .game {
     grid-template-columns: 1fr;
   }
@@ -572,9 +569,11 @@ button:disabled {
     align-items: flex-start;
   }
 
-  .game-log-header,
-  .game-log-controls {
-    flex-direction: column;
-    align-items: flex-start;
+  .game-log {
+    padding: 0.55rem 1rem 0.75rem;
+  }
+
+  .game-log-list {
+    width: 100%;
   }
 }

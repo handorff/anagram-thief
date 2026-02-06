@@ -69,7 +69,6 @@ const MAX_FLIP_TIMER_SECONDS = 60;
 const DEFAULT_CLAIM_TIMER_SECONDS = 3;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
-const COLLAPSED_LOG_LINES = 5;
 const MAX_LOG_ENTRIES = 300;
 const CLAIM_FAILURE_WINDOW_MS = 4_000;
 const CLAIM_FAILURE_MESSAGES = new Set([
@@ -173,7 +172,6 @@ export default function App() {
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
-  const [isLogExpanded, setIsLogExpanded] = useState(false);
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
@@ -194,7 +192,7 @@ export default function App() {
 
   const [claimWord, setClaimWord] = useState("");
   const claimInputRef = useRef<HTMLInputElement>(null);
-  const logScrollRef = useRef<HTMLDivElement>(null);
+  const gameLogListRef = useRef<HTMLDivElement>(null);
   const previousGameStateRef = useRef<GameState | null>(null);
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
   const roomStatusRef = useRef<RoomState["status"] | null>(null);
@@ -371,10 +369,15 @@ export default function App() {
   const isClaimInputDisabled = (Boolean(claimWindow) && !isMyClaimWindow) || isClaimCooldownActive;
   const shouldShowGameLog =
     Boolean(gameState) && (roomState?.status === "in-game" || roomState?.status === "ended");
-  const visibleGameLogEntries = useMemo(() => {
-    if (isLogExpanded) return gameLogEntries;
-    return gameLogEntries.slice(-COLLAPSED_LOG_LINES);
-  }, [gameLogEntries, isLogExpanded]);
+  const gameOverStandings = useMemo(() => {
+    if (!gameState) {
+      return { players: [] as Player[], winningScore: null as number | null };
+    }
+
+    const players = gameState.players.slice().sort((a, b) => b.score - a.score);
+    const winningScore = players.length > 0 ? players[0].score : null;
+    return { players, winningScore };
+  }, [gameState]);
 
   const handleCreate = () => {
     if (!playerName) return;
@@ -426,7 +429,6 @@ export default function App() {
     setRoomState(null);
     setGameState(null);
     setGameLogEntries([]);
-    setIsLogExpanded(false);
     previousGameStateRef.current = null;
     lastClaimFailureRef.current = null;
   };
@@ -558,13 +560,6 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!isLogExpanded) return;
-    const logElement = logScrollRef.current;
-    if (!logElement) return;
-    logElement.scrollTop = logElement.scrollHeight;
-  }, [gameLogEntries, isLogExpanded]);
-
-  useEffect(() => {
     const roomId = roomState?.id ?? null;
     const previousRoomId = previousRoomIdRef.current;
     const shouldReset =
@@ -574,13 +569,19 @@ export default function App() {
 
     if (shouldReset) {
       setGameLogEntries([]);
-      setIsLogExpanded(false);
       previousGameStateRef.current = null;
       lastClaimFailureRef.current = null;
     }
 
     previousRoomIdRef.current = roomId;
   }, [roomState?.id, roomState?.status]);
+
+  useEffect(() => {
+    if (!shouldShowGameLog) return;
+    const logListElement = gameLogListRef.current;
+    if (!logListElement) return;
+    logListElement.scrollTop = logListElement.scrollHeight;
+  }, [gameLogEntries.length, shouldShowGameLog]);
 
   useEffect(() => {
     if (!gameState || !roomState || (roomState.status !== "in-game" && roomState.status !== "ended")) {
@@ -738,8 +739,10 @@ export default function App() {
     );
   }
 
+  const pageClassName = shouldShowGameLog ? "page has-game-log" : "page";
+
   return (
-    <div className="page">
+    <div className={pageClassName}>
       <header className="header">
         <div>
           <h1>Anagram Thief</h1>
@@ -1047,40 +1050,35 @@ export default function App() {
           <h2>Game Over</h2>
           <p className="muted">Final scores</p>
           <div className="player-list">
-            {gameState.players
-              .slice()
-              .sort((a, b) => b.score - a.score)
-              .map((player) => (
-                <div key={player.id} className="player">
-                  <span>{player.name}</span>
+            {gameOverStandings.players.map((player) => {
+              const isWinner =
+                gameOverStandings.winningScore !== null && player.score === gameOverStandings.winningScore;
+              return (
+                <div key={player.id} className={isWinner ? "player winner" : "player"}>
+                  <div>
+                    <span>{player.name}</span>
+                    {isWinner && <span className="badge winner-badge">winner</span>}
+                  </div>
                   <span className="score">{player.score}</span>
                 </div>
-              ))}
+              );
+            })}
+          </div>
+          <div className="button-row">
+            <button className="button-secondary" onClick={handleLeaveRoom}>
+              Return to lobby
+            </button>
           </div>
         </div>
       )}
 
       {shouldShowGameLog && (
-        <section className={`panel game-log ${isLogExpanded ? "game-log-expanded" : ""}`}>
-          <div className="game-log-header">
-            <h2>Game Log</h2>
-            <div className="game-log-controls">
-              <span className="muted">
-                {gameLogEntries.length} {gameLogEntries.length === 1 ? "event" : "events"}
-              </span>
-              <button className="button-secondary" onClick={() => setIsLogExpanded((current) => !current)}>
-                {isLogExpanded ? "Collapse" : `Show all (${gameLogEntries.length})`}
-              </button>
-            </div>
-          </div>
-          <div
-            ref={logScrollRef}
-            className={`game-log-list ${isLogExpanded ? "expanded" : "collapsed"}`}
-          >
-            {visibleGameLogEntries.length === 0 && (
+        <section className="game-log">
+          <div ref={gameLogListRef} className="game-log-list">
+            {gameLogEntries.length === 0 && (
               <div className="game-log-empty muted">No gameplay events yet.</div>
             )}
-            {visibleGameLogEntries.map((entry) => (
+            {gameLogEntries.map((entry) => (
               <div
                 key={entry.id}
                 className={`game-log-row ${entry.kind === "error" ? "error" : ""}`}
