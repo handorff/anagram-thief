@@ -353,6 +353,31 @@ function findReplacedWord(addedWord: WordSnapshot, removedWords: WordSnapshot[])
   return matches[0];
 }
 
+function appendPreStealLogContext(text: string, gameState: GameState, wordId: string): string {
+  const claimEvent = gameState.lastClaimEvent;
+  if (!claimEvent || claimEvent.wordId !== wordId || claimEvent.source !== "pre-steal") {
+    return text;
+  }
+
+  const textWithoutPeriod = text.endsWith(".") ? text.slice(0, -1) : text;
+  if (claimEvent.movedToBottomOfPreStealPrecedence) {
+    return `${textWithoutPeriod} via pre-steal. Moved to bottom of pre-steal precedence.`;
+  }
+  return `${textWithoutPeriod} via pre-steal.`;
+}
+
+function reorderEntriesById<T extends { id: string }>(items: T[], draggedId: string, targetId: string): T[] {
+  if (draggedId === targetId) return items;
+  const sourceIndex = items.findIndex((item) => item.id === draggedId);
+  const targetIndex = items.findIndex((item) => item.id === targetId);
+  if (sourceIndex === -1 || targetIndex === -1) return items;
+
+  const next = [...items];
+  const [moved] = next.splice(sourceIndex, 1);
+  next.splice(targetIndex, 0, moved);
+  return next;
+}
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [selfPlayerId, setSelfPlayerId] = useState<string | null>(null);
@@ -383,6 +408,7 @@ export default function App() {
   const [createFlipTimerEnabled, setCreateFlipTimerEnabled] = useState(false);
   const [createFlipTimerSeconds, setCreateFlipTimerSeconds] = useState(DEFAULT_FLIP_TIMER_SECONDS);
   const [createClaimTimerSeconds, setCreateClaimTimerSeconds] = useState(DEFAULT_CLAIM_TIMER_SECONDS);
+  const [createPreStealEnabled, setCreatePreStealEnabled] = useState(false);
 
   const [joinCode, setJoinCode] = useState("");
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
@@ -398,6 +424,9 @@ export default function App() {
   const [isEditorShareValidationInFlight, setIsEditorShareValidationInFlight] = useState(false);
 
   const [claimWord, setClaimWord] = useState("");
+  const [preStealTriggerInput, setPreStealTriggerInput] = useState("");
+  const [preStealClaimWordInput, setPreStealClaimWordInput] = useState("");
+  const [preStealDraggedEntryId, setPreStealDraggedEntryId] = useState<string | null>(null);
   const [practiceWord, setPracticeWord] = useState("");
   const [practiceSubmitError, setPracticeSubmitError] = useState<string | null>(null);
   const [practiceShareStatus, setPracticeShareStatus] = useState<"copied" | "failed" | null>(null);
@@ -595,6 +624,16 @@ export default function App() {
     if (roomState) return roomState.players;
     return [];
   }, [gameState, roomState]);
+  const myPreStealEntries = useMemo(() => {
+    if (!gameState || !selfPlayerId) return [];
+    return gameState.players.find((player) => player.id === selfPlayerId)?.preStealEntries ?? [];
+  }, [gameState, selfPlayerId]);
+  const preStealPrecedencePlayers = useMemo(() => {
+    if (!gameState) return [];
+    return gameState.preStealPrecedenceOrder
+      .map((playerId) => gameState.players.find((player) => player.id === playerId))
+      .filter((player): player is Player => Boolean(player));
+  }, [gameState]);
 
   const lobbyRooms = useMemo(() => roomList.filter((room) => room.status === "lobby"), [roomList]);
 
@@ -892,7 +931,8 @@ export default function App() {
       maxPlayers: createMaxPlayers,
       flipTimerEnabled: createFlipTimerEnabled,
       flipTimerSeconds,
-      claimTimerSeconds
+      claimTimerSeconds,
+      preStealEnabled: createPreStealEnabled
     });
   };
 
@@ -1181,6 +1221,57 @@ export default function App() {
     requestAnimationFrame(() => claimInputRef.current?.focus());
   }, [roomState, isMyClaimWindow, claimWord]);
 
+  const handleAddPreStealEntry = useCallback(() => {
+    if (!roomState || !gameState?.preStealEnabled) return;
+    const triggerLetters = preStealTriggerInput.trim();
+    const claimWord = preStealClaimWordInput.trim();
+    if (!triggerLetters || !claimWord) return;
+
+    socket.emit("game:pre-steal:add", {
+      roomId: roomState.id,
+      triggerLetters,
+      claimWord
+    });
+    setPreStealTriggerInput("");
+    setPreStealClaimWordInput("");
+  }, [roomState, gameState?.preStealEnabled, preStealTriggerInput, preStealClaimWordInput]);
+
+  const handleRemovePreStealEntry = useCallback(
+    (entryId: string) => {
+      if (!roomState || !gameState?.preStealEnabled) return;
+      socket.emit("game:pre-steal:remove", {
+        roomId: roomState.id,
+        entryId
+      });
+    },
+    [roomState, gameState?.preStealEnabled]
+  );
+
+  const handleReorderPreStealEntries = useCallback(
+    (orderedEntryIds: string[]) => {
+      if (!roomState || !gameState?.preStealEnabled) return;
+      socket.emit("game:pre-steal:reorder", {
+        roomId: roomState.id,
+        orderedEntryIds
+      });
+    },
+    [roomState, gameState?.preStealEnabled]
+  );
+
+  const handlePreStealEntryDrop = useCallback(
+    (targetEntryId: string) => {
+      if (!preStealDraggedEntryId) return;
+      const nextEntries = reorderEntriesById(myPreStealEntries, preStealDraggedEntryId, targetEntryId);
+      const nextOrder = nextEntries.map((entry) => entry.id);
+      const currentOrder = myPreStealEntries.map((entry) => entry.id);
+      if (nextOrder.join(",") !== currentOrder.join(",")) {
+        handleReorderPreStealEntries(nextOrder);
+      }
+      setPreStealDraggedEntryId(null);
+    },
+    [preStealDraggedEntryId, myPreStealEntries, handleReorderPreStealEntries]
+  );
+
   useEffect(() => {
     if (!isMyClaimWindow) {
       setClaimWord("");
@@ -1277,6 +1368,13 @@ export default function App() {
       return;
     }
     setLobbyView("list");
+  }, [roomState]);
+
+  useEffect(() => {
+    if (roomState) return;
+    setPreStealTriggerInput("");
+    setPreStealClaimWordInput("");
+    setPreStealDraggedEntryId(null);
   }, [roomState]);
 
   useEffect(() => {
@@ -1423,7 +1521,10 @@ export default function App() {
       const replacedWord = findReplacedWord(addedWord, removedWords);
       if (!replacedWord) {
         markClaimedWordForAnimation(addedWord.id, "claim");
-        pendingEntries.push({ text: `${claimantName} claimed ${addedWord.text}.`, kind: "event" });
+        pendingEntries.push({
+          text: appendPreStealLogContext(`${claimantName} claimed ${addedWord.text}.`, gameState, addedWord.id),
+          kind: "event"
+        });
         continue;
       }
 
@@ -1435,14 +1536,22 @@ export default function App() {
       if (replacedWord.ownerId === addedWord.ownerId) {
         markClaimedWordForAnimation(addedWord.id, "claim");
         pendingEntries.push({
-          text: `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
+          text: appendPreStealLogContext(
+            `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
+            gameState,
+            addedWord.id
+          ),
           kind: "event"
         });
       } else {
         markClaimedWordForAnimation(addedWord.id, "steal");
         const stolenFromName = getPlayerName(gameState.players, replacedWord.ownerId);
         pendingEntries.push({
-          text: `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
+          text: appendPreStealLogContext(
+            `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
+            gameState,
+            addedWord.id
+          ),
           kind: "event"
         });
       }
@@ -1708,6 +1817,14 @@ export default function App() {
                 onBlur={() =>
                   setCreateClaimTimerSeconds((current) => clampClaimTimerSeconds(current))
                 }
+              />
+            </label>
+            <label className="row">
+              <span>Enable pre-steal</span>
+              <input
+                type="checkbox"
+                checked={createPreStealEnabled}
+                onChange={(event) => setCreatePreStealEnabled(event.target.checked)}
               />
             </label>
             <div className="button-row">
@@ -2052,6 +2169,7 @@ export default function App() {
               Flip timer: {roomState.flipTimer.enabled ? `${roomState.flipTimer.seconds}s` : "off"}
             </p>
             <p className="muted">Claim timer: {roomState.claimTimer.seconds}s</p>
+            <p className="muted">Pre-steal: {roomState.preSteal.enabled ? "on" : "off"}</p>
             {!roomState.isPublic && roomState.code && <p className="muted">Code: {roomState.code}</p>}
             <div className="player-list">
               {currentPlayers.map((player) => (
@@ -2177,6 +2295,90 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {gameState.preStealEnabled && (
+              <div className="pre-steal-panel">
+                <div className="pre-steal-layout">
+                  <div className="pre-steal-entries-column">
+                    <div className="word-header">
+                      <span>Your pre-steal entries</span>
+                    </div>
+                    <div className="pre-steal-entry-form">
+                      <input
+                        value={preStealTriggerInput}
+                        onChange={(event) => setPreStealTriggerInput(event.target.value)}
+                        placeholder="Trigger letters"
+                      />
+                      <input
+                        value={preStealClaimWordInput}
+                        onChange={(event) => setPreStealClaimWordInput(event.target.value)}
+                        placeholder="Claim word"
+                      />
+                      <button
+                        className="button-secondary"
+                        onClick={handleAddPreStealEntry}
+                        disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
+                      >
+                        Add
+                      </button>
+                    </div>
+
+                    {myPreStealEntries.length === 0 && (
+                      <div className="muted">No pre-steal entries.</div>
+                    )}
+                    {myPreStealEntries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="pre-steal-entry self"
+                        draggable
+                        onDragStart={(event) => {
+                          setPreStealDraggedEntryId(entry.id);
+                          event.dataTransfer.setData("text/plain", entry.id);
+                        }}
+                        onDragEnd={() => setPreStealDraggedEntryId(null)}
+                        onDragOver={(event) => {
+                          if (!preStealDraggedEntryId) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          handlePreStealEntryDrop(entry.id);
+                        }}
+                      >
+                        <span className="pre-steal-entry-text">
+                          {entry.triggerLetters}
+                          {" -> "}
+                          {entry.claimWord}
+                        </span>
+                        <button className="button-secondary" onClick={() => handleRemovePreStealEntry(entry.id)}>
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="pre-steal-precedence-column">
+                    <div className="word-header">
+                      <span>Precendence</span>
+                    </div>
+                    {preStealPrecedencePlayers.length === 0 && (
+                      <div className="muted">No precedence order available.</div>
+                    )}
+                    {preStealPrecedencePlayers.length > 0 && (
+                      <ol className="pre-steal-precedence-list">
+                        {preStealPrecedencePlayers.map((player) => (
+                          <li key={player.id}>
+                            <span>{player.name}</span>
+                            {!player.connected && <span className="badge">offline</span>}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="panel scoreboard">

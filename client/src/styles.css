@@ -737,6 +737,83 @@ button:disabled {
   overflow-x: hidden;
 }
 
+.pre-steal-panel {
+  padding: 0.75rem;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.pre-steal-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 230px);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.pre-steal-entries-column,
+.pre-steal-precedence-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.pre-steal-precedence-column {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  padding-left: 0.65rem;
+}
+
+.pre-steal-precedence-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.pre-steal-precedence-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pre-steal-entry-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.5rem;
+}
+
+.pre-steal-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-radius: 8px;
+  padding: 0.4rem 0.45rem;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.pre-steal-entry.self {
+  cursor: grab;
+}
+
+.pre-steal-entry.self:active {
+  cursor: grabbing;
+}
+
+.pre-steal-entry button {
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+}
+
+.pre-steal-entry-text {
+  font-weight: 600;
+  word-break: break-word;
+}
+
 .word-list {
   padding: 0.75rem;
   border-radius: 12px;
@@ -1124,6 +1201,10 @@ button:disabled {
   .scoreboard-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .pre-steal-entry-form {
+    grid-template-columns: 1fr;
   }
 
   .game-log {

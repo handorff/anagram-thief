@@ -9,6 +9,17 @@ export interface ClaimTimerSettings {
   seconds: number;
 }
 
+export interface PreStealSettings {
+  enabled: boolean;
+}
+
+export interface PreStealEntry {
+  id: string;
+  triggerLetters: string;
+  claimWord: string;
+  createdAt: number;
+}
+
 export interface Tile {
   id: string;
   letter: string;
@@ -27,6 +38,7 @@ export interface Player {
   name: string;
   connected: boolean;
   words: Word[];
+  preStealEntries: PreStealEntry[];
   score: number;
 }
 
@@ -50,6 +62,7 @@ export interface RoomState {
   createdAt: number;
   flipTimer: FlipTimerSettings;
   claimTimer: ClaimTimerSettings;
+  preSteal: PreStealSettings;
 }
 
 export interface ClaimWindowState {
@@ -61,6 +74,15 @@ export interface PendingFlipState {
   playerId: string;
   startedAt: number;
   revealsAt: number;
+}
+
+export interface ClaimEventMeta {
+  eventId: string;
+  wordId: string;
+  claimantId: string;
+  replacedWordId: string | null;
+  source: "manual" | "pre-steal";
+  movedToBottomOfPreStealPrecedence: boolean;
 }
 
 export interface GameState {
@@ -75,6 +97,9 @@ export interface GameState {
   claimWindow: ClaimWindowState | null;
   claimCooldowns: Record<string, number>;
   pendingFlip: PendingFlipState | null;
+  preStealEnabled: boolean;
+  preStealPrecedenceOrder: string[];
+  lastClaimEvent: ClaimEventMeta | null;
 }
 
 export type PracticeDifficulty = 1 | 2 | 3 | 4 | 5;

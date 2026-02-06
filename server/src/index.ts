@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import type {
+  ClaimEventMeta,
   GameState,
   PendingFlipState,
   Player,
+  PreStealEntry,
   PracticeDifficulty,
   PracticeModeState,
   PracticePuzzle,
@@ -126,6 +128,9 @@ type GameStateInternal = {
   claimWindowTimeout?: NodeJS.Timeout;
   claimCooldowns: Record<string, number>;
   claimCooldownTimeouts: Map<string, NodeJS.Timeout>;
+  preStealEnabled: boolean;
+  preStealPrecedenceOrder: string[];
+  lastClaimEvent: ClaimEventMeta | null;
 };
 
 type SessionRecord = {
@@ -357,12 +362,15 @@ function emitRoomState(roomId: string) {
 function emitGameState(roomId: string) {
   const game = games.get(roomId);
   if (!game) return;
-  const publicState: GameState = {
+  const buildPublicState = (viewerPlayerId: string | null): GameState => ({
     roomId: game.roomId,
     status: game.status,
     bagCount: game.bag.length,
     centerTiles: game.centerTiles,
-    players: game.players,
+    players: game.players.map((player) => ({
+      ...player,
+      preStealEntries: viewerPlayerId === player.id ? player.preStealEntries : []
+    })),
     turnPlayerId: game.turnPlayerId,
     lastClaimAt: game.lastClaimAt,
     endTimerEndsAt: game.endTimerEndsAt,
@@ -376,9 +384,17 @@ function emitGameState(roomId: string) {
           startedAt: game.pendingFlip.startedAt,
           revealsAt: game.pendingFlip.revealsAt
         }
-      : null
-  };
-  io.to(roomId).emit("game:state", publicState);
+      : null,
+    preStealEnabled: game.preStealEnabled,
+    preStealPrecedenceOrder: game.preStealPrecedenceOrder,
+    lastClaimEvent: game.lastClaimEvent
+  });
+
+  for (const player of game.players) {
+    const activeSocket = getActiveSocketForPlayer(player.id);
+    if (!activeSocket) continue;
+    activeSocket.emit("game:state", buildPublicState(player.id));
+  }
 }
 
 function clearEndTimer(game: GameStateInternal) {
@@ -410,6 +426,47 @@ function countLetters(word: string): Record<string, number> {
   return counts;
 }
 
+function addLetterCounts(
+  left: Record<string, number>,
+  right: Record<string, number>
+): Record<string, number> {
+  const result: Record<string, number> = { ...left };
+  for (const [letter, count] of Object.entries(right)) {
+    result[letter] = (result[letter] ?? 0) + count;
+  }
+  return result;
+}
+
+function hasAllLetterCounts(
+  available: Record<string, number>,
+  required: Record<string, number>
+): boolean {
+  for (const [letter, count] of Object.entries(required)) {
+    if ((available[letter] ?? 0) < count) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areLetterCountsEqual(
+  first: Record<string, number>,
+  second: Record<string, number>
+): boolean {
+  const letters = new Set([...Object.keys(first), ...Object.keys(second)]);
+  for (const letter of letters) {
+    if ((first[letter] ?? 0) !== (second[letter] ?? 0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizePreStealInput(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return normalizeWord(value);
+}
+
 function selectTilesForWord(word: string, tiles: Tile[]): Tile[] | null {
   const remaining = [...tiles];
   const selected: Tile[] = [];
@@ -420,6 +477,243 @@ function selectTilesForWord(word: string, tiles: Tile[]): Tile[] | null {
     remaining.splice(index, 1);
   }
   return selected;
+}
+
+type ClaimTargetCandidate = {
+  target: Word;
+  owner: Player;
+  selectedTiles: Tile[];
+  required: Record<string, number>;
+  requiredTotal: number;
+};
+
+type ClaimSelection = {
+  selectedTiles: Tile[];
+  combinedTileIds: string[];
+  replacedWordOwner: Player | null;
+  replacedWord: Word | null;
+};
+
+type ClaimSelectionOptions = {
+  requiredFromCenterExact?: Record<string, number>;
+};
+
+function getClaimSelection(
+  game: GameStateInternal,
+  player: Player,
+  normalizedWord: string,
+  options: ClaimSelectionOptions = {}
+): ClaimSelection | null {
+  const wordCounts = countLetters(normalizedWord);
+  const stealCandidates: ClaimTargetCandidate[] = [];
+  const extendCandidates: ClaimTargetCandidate[] = [];
+
+  for (const owner of game.players) {
+    for (const target of owner.words) {
+      const targetCounts = countLetters(target.text);
+      if (!hasAllLetterCounts(wordCounts, targetCounts)) continue;
+
+      const required: Record<string, number> = {};
+      let requiredTotal = 0;
+      for (const [letter, count] of Object.entries(wordCounts)) {
+        const diff = count - (targetCounts[letter] ?? 0);
+        if (diff > 0) {
+          required[letter] = diff;
+          requiredTotal += diff;
+        }
+      }
+
+      if (requiredTotal < 1) continue;
+      if (
+        options.requiredFromCenterExact &&
+        !areLetterCountsEqual(required, options.requiredFromCenterExact)
+      ) {
+        continue;
+      }
+
+      if (normalizedWord.includes(target.text)) continue;
+
+      const selectedTiles = selectTilesForCounts(required, game.centerTiles);
+      if (!selectedTiles) continue;
+
+      const candidate: ClaimTargetCandidate = {
+        target,
+        owner,
+        selectedTiles,
+        required,
+        requiredTotal
+      };
+      if (owner.id === player.id) {
+        extendCandidates.push(candidate);
+      } else {
+        stealCandidates.push(candidate);
+      }
+    }
+  }
+
+  const sortCandidates = (a: ClaimTargetCandidate, b: ClaimTargetCandidate) => {
+    if (a.requiredTotal !== b.requiredTotal) {
+      return a.requiredTotal - b.requiredTotal;
+    }
+    if (a.target.createdAt !== b.target.createdAt) {
+      return a.target.createdAt - b.target.createdAt;
+    }
+    return a.target.text.localeCompare(b.target.text);
+  };
+  stealCandidates.sort(sortCandidates);
+  extendCandidates.sort(sortCandidates);
+
+  if (stealCandidates.length > 0) {
+    const chosen = stealCandidates[0];
+    return {
+      selectedTiles: chosen.selectedTiles,
+      combinedTileIds: [...chosen.target.tileIds, ...chosen.selectedTiles.map((tile) => tile.id)],
+      replacedWordOwner: chosen.owner,
+      replacedWord: chosen.target
+    };
+  }
+
+  if (extendCandidates.length > 0) {
+    const chosen = extendCandidates[0];
+    return {
+      selectedTiles: chosen.selectedTiles,
+      combinedTileIds: [...chosen.target.tileIds, ...chosen.selectedTiles.map((tile) => tile.id)],
+      replacedWordOwner: chosen.owner,
+      replacedWord: chosen.target
+    };
+  }
+
+  if (options.requiredFromCenterExact) {
+    return null;
+  }
+
+  const selectedTiles = selectTilesForWord(normalizedWord, game.centerTiles);
+  if (!selectedTiles) return null;
+
+  return {
+    selectedTiles,
+    combinedTileIds: selectedTiles.map((tile) => tile.id),
+    replacedWordOwner: null,
+    replacedWord: null
+  };
+}
+
+function entryMatchesExistingWord(entry: PreStealEntry, targetWord: Word): boolean {
+  if (entry.claimWord.includes(targetWord.text)) return false;
+  const claimCounts = countLetters(entry.claimWord);
+  const targetCounts = countLetters(targetWord.text);
+  const triggerCounts = countLetters(entry.triggerLetters);
+  return areLetterCountsEqual(claimCounts, addLetterCounts(targetCounts, triggerCounts));
+}
+
+function isPreStealEntryValid(game: GameStateInternal, entry: PreStealEntry): boolean {
+  if (!entry.triggerLetters || !/^[A-Z]+$/.test(entry.triggerLetters)) return false;
+  if (!entry.claimWord || !/^[A-Z]+$/.test(entry.claimWord)) return false;
+  if (!isValidWord(entry.claimWord, wordSet)) return false;
+
+  for (const owner of game.players) {
+    for (const target of owner.words) {
+      if (entryMatchesExistingWord(entry, target)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function revalidateAllPreStealEntries(game: GameStateInternal) {
+  if (!game.preStealEnabled) return;
+  for (const player of game.players) {
+    player.preStealEntries = player.preStealEntries.filter((entry) => isPreStealEntryValid(game, entry));
+  }
+}
+
+type ClaimSource = "manual" | "pre-steal";
+
+type ClaimExecutionResult = {
+  newWord: Word;
+  replacedWord: Word | null;
+};
+
+function executeClaim(
+  game: GameStateInternal,
+  player: Player,
+  normalizedWord: string,
+  source: ClaimSource,
+  options: ClaimSelectionOptions = {}
+): ClaimExecutionResult | null {
+  const selection = getClaimSelection(game, player, normalizedWord, options);
+  if (!selection) return null;
+
+  const now = Date.now();
+  const newWord: Word = {
+    id: randomUUID(),
+    text: normalizedWord,
+    tileIds: selection.combinedTileIds,
+    ownerId: player.id,
+    createdAt: now
+  };
+
+  if (selection.replacedWordOwner && selection.replacedWord) {
+    selection.replacedWordOwner.words = selection.replacedWordOwner.words.filter(
+      (entry) => entry.id !== selection.replacedWord!.id
+    );
+  }
+
+  player.words.push(newWord);
+  removeTilesFromCenter(game, selection.selectedTiles.map((tile) => tile.id));
+  updateScores(game);
+  revalidateAllPreStealEntries(game);
+
+  game.lastClaimAt = now;
+  game.lastClaimEvent = {
+    eventId: randomUUID(),
+    wordId: newWord.id,
+    claimantId: player.id,
+    replacedWordId: selection.replacedWord?.id ?? null,
+    source,
+    movedToBottomOfPreStealPrecedence: false
+  };
+
+  if (game.bag.length === 0) {
+    scheduleEndTimer(game);
+  }
+
+  return {
+    newWord,
+    replacedWord: selection.replacedWord
+  };
+}
+
+function maybeRunAutoPreSteal(game: GameStateInternal): boolean {
+  if (!game.preStealEnabled) return false;
+  const centerCounts = countLetters(game.centerTiles.map((tile) => tile.letter).join(""));
+
+  for (const playerId of game.preStealPrecedenceOrder) {
+    const player = game.players.find((entry) => entry.id === playerId);
+    if (!player || !player.connected) continue;
+
+    for (const entry of player.preStealEntries) {
+      const triggerCounts = countLetters(entry.triggerLetters);
+      if (!hasAllLetterCounts(centerCounts, triggerCounts)) continue;
+      if (!isPreStealEntryValid(game, entry)) continue;
+
+      const claimResult = executeClaim(game, player, entry.claimWord, "pre-steal", {
+        requiredFromCenterExact: triggerCounts
+      });
+      if (!claimResult) continue;
+
+      game.preStealPrecedenceOrder = game.preStealPrecedenceOrder.filter((id) => id !== player.id);
+      game.preStealPrecedenceOrder.push(player.id);
+      if (game.lastClaimEvent) {
+        game.lastClaimEvent.movedToBottomOfPreStealPrecedence = true;
+      }
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function selectTilesForCounts(required: Record<string, number>, tiles: Tile[]): Tile[] | null {
@@ -627,7 +921,9 @@ function revealPendingFlip(game: GameStateInternal, token: string): boolean {
   const tile = game.bag.shift();
   if (!tile) return false;
   game.centerTiles.push(tile);
+  game.lastClaimEvent = null;
   clearAllClaimCooldowns(game);
+  maybeRunAutoPreSteal(game);
   if (game.turnPlayerId === pendingFlip.playerId) {
     advanceTurn(game);
   }
@@ -700,6 +996,7 @@ function removePlayerFromGame(game: GameStateInternal, playerId: string) {
   clearClaimCooldown(game, playerId);
   game.players = game.players.filter((player) => player.id !== playerId);
   game.turnOrder = game.turnOrder.filter((id) => id !== playerId);
+  game.preStealPrecedenceOrder = game.preStealPrecedenceOrder.filter((id) => id !== playerId);
 
   if (game.players.length === 0) {
     game.turnPlayerId = "";
@@ -722,6 +1019,8 @@ function removePlayerFromGame(game: GameStateInternal, playerId: string) {
   } else {
     game.turnIndex = Math.max(0, game.turnOrder.indexOf(game.turnPlayerId));
   }
+
+  revalidateAllPreStealEntries(game);
 
   return { turnPlayerChanged: previousTurnPlayerId !== game.turnPlayerId };
 }
@@ -1081,7 +1380,8 @@ io.on("connection", (socket) => {
       maxPlayers,
       flipTimerEnabled,
       flipTimerSeconds,
-      claimTimerSeconds
+      claimTimerSeconds,
+      preStealEnabled
     }: {
       roomName?: string;
       playerName?: string;
@@ -1091,6 +1391,7 @@ io.on("connection", (socket) => {
       flipTimerEnabled?: boolean;
       flipTimerSeconds?: number;
       claimTimerSeconds?: number;
+      preStealEnabled?: boolean;
     }) => {
       const currentSession = getSessionBySocket(socket);
       if (!currentSession) {
@@ -1117,6 +1418,7 @@ io.on("connection", (socket) => {
       const resolvedFlipTimerEnabled = Boolean(flipTimerEnabled);
       const resolvedFlipTimerSeconds = clampFlipTimerSeconds(flipTimerSeconds);
       const resolvedClaimTimerSeconds = clampClaimTimerSeconds(claimTimerSeconds);
+      const resolvedPreStealEnabled = Boolean(preStealEnabled);
       const roomId = randomUUID();
       const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
       const sanitizedPlayerName = sanitizeName(resolvedPlayerName);
@@ -1125,6 +1427,7 @@ io.on("connection", (socket) => {
         name: sanitizedPlayerName,
         connected: true,
         words: [],
+        preStealEntries: [],
         score: 0
       };
 
@@ -1144,6 +1447,9 @@ io.on("connection", (socket) => {
         },
         claimTimer: {
           seconds: resolvedClaimTimerSeconds
+        },
+        preSteal: {
+          enabled: resolvedPreStealEnabled
         }
       };
 
@@ -1205,6 +1511,7 @@ io.on("connection", (socket) => {
         name: resolvedName,
         connected: true,
         words: [],
+        preStealEntries: [],
         score: 0
       };
       room.players.push(player);
@@ -1283,6 +1590,7 @@ io.on("connection", (socket) => {
     const players = room.players.map((player) => ({
       ...player,
       words: [],
+      preStealEntries: [],
       score: 0
     }));
     const turnOrder = players.map((player) => player.id);
@@ -1315,7 +1623,10 @@ io.on("connection", (socket) => {
       pendingFlip: null,
       claimWindow: null,
       claimCooldowns: {},
-      claimCooldownTimeouts: new Map()
+      claimCooldownTimeouts: new Map(),
+      preStealEnabled: room.preSteal?.enabled ?? false,
+      preStealPrecedenceOrder: [...turnOrder],
+      lastClaimEvent: null
     };
 
     games.set(roomId, game);
@@ -1376,6 +1687,187 @@ io.on("connection", (socket) => {
       emitGameState(roomId);
     });
   });
+
+  socket.on(
+    "game:pre-steal:add",
+    ({
+      roomId,
+      triggerLetters,
+      claimWord
+    }: {
+      roomId: string;
+      triggerLetters: string;
+      claimWord: string;
+    }) => {
+      const playerId = getSocketData(socket).playerId;
+      if (!playerId) {
+        emitError(socket, "Player not found.");
+        return;
+      }
+
+      enqueue(roomId, () => {
+        const game = games.get(roomId);
+        if (!game) {
+          emitError(socket, "Game not found.");
+          return;
+        }
+        if (game.status !== "in-game") {
+          emitError(socket, "Game has ended.");
+          return;
+        }
+        if (!game.preStealEnabled) {
+          emitError(socket, "Pre-steal mode is disabled.");
+          return;
+        }
+
+        const player = game.players.find((entry) => entry.id === playerId);
+        if (!player) {
+          emitError(socket, "Player not found.");
+          return;
+        }
+
+        const normalizedTriggerLetters = normalizePreStealInput(triggerLetters);
+        const normalizedClaimWord = normalizePreStealInput(claimWord);
+        if (!normalizedTriggerLetters) {
+          emitError(socket, "Enter trigger letters.");
+          return;
+        }
+        if (!/^[A-Z]+$/.test(normalizedTriggerLetters)) {
+          emitError(socket, "Trigger letters must contain only letters A-Z.");
+          return;
+        }
+        if (!normalizedClaimWord) {
+          emitError(socket, "Enter a claim word.");
+          return;
+        }
+        if (!/^[A-Z]+$/.test(normalizedClaimWord)) {
+          emitError(socket, "Claim word must contain only letters A-Z.");
+          return;
+        }
+        if (!isValidWord(normalizedClaimWord, wordSet)) {
+          emitError(socket, "Claim word is not valid.");
+          return;
+        }
+
+        const entry: PreStealEntry = {
+          id: randomUUID(),
+          triggerLetters: normalizedTriggerLetters,
+          claimWord: normalizedClaimWord,
+          createdAt: Date.now()
+        };
+        if (!isPreStealEntryValid(game, entry)) {
+          emitError(socket, "Pre-steal entry is not valid for current words.");
+          return;
+        }
+
+        player.preStealEntries.push(entry);
+        emitGameState(roomId);
+      });
+    }
+  );
+
+  socket.on(
+    "game:pre-steal:remove",
+    ({ roomId, entryId }: { roomId: string; entryId: string }) => {
+      const playerId = getSocketData(socket).playerId;
+      if (!playerId) {
+        emitError(socket, "Player not found.");
+        return;
+      }
+
+      enqueue(roomId, () => {
+        const game = games.get(roomId);
+        if (!game) {
+          emitError(socket, "Game not found.");
+          return;
+        }
+        if (game.status !== "in-game") {
+          emitError(socket, "Game has ended.");
+          return;
+        }
+        if (!game.preStealEnabled) {
+          emitError(socket, "Pre-steal mode is disabled.");
+          return;
+        }
+
+        const player = game.players.find((entry) => entry.id === playerId);
+        if (!player) {
+          emitError(socket, "Player not found.");
+          return;
+        }
+
+        const nextEntries = player.preStealEntries.filter((entry) => entry.id !== entryId);
+        if (nextEntries.length === player.preStealEntries.length) {
+          emitError(socket, "Pre-steal entry not found.");
+          return;
+        }
+        player.preStealEntries = nextEntries;
+        emitGameState(roomId);
+      });
+    }
+  );
+
+  socket.on(
+    "game:pre-steal:reorder",
+    ({ roomId, orderedEntryIds }: { roomId: string; orderedEntryIds: string[] }) => {
+      const playerId = getSocketData(socket).playerId;
+      if (!playerId) {
+        emitError(socket, "Player not found.");
+        return;
+      }
+
+      enqueue(roomId, () => {
+        const game = games.get(roomId);
+        if (!game) {
+          emitError(socket, "Game not found.");
+          return;
+        }
+        if (game.status !== "in-game") {
+          emitError(socket, "Game has ended.");
+          return;
+        }
+        if (!game.preStealEnabled) {
+          emitError(socket, "Pre-steal mode is disabled.");
+          return;
+        }
+
+        const player = game.players.find((entry) => entry.id === playerId);
+        if (!player) {
+          emitError(socket, "Player not found.");
+          return;
+        }
+
+        if (!Array.isArray(orderedEntryIds)) {
+          emitError(socket, "Invalid pre-steal entry order.");
+          return;
+        }
+
+        const existingIds = player.preStealEntries.map((entry) => entry.id);
+        if (orderedEntryIds.length !== existingIds.length) {
+          emitError(socket, "Invalid pre-steal entry order.");
+          return;
+        }
+        const existingIdSet = new Set(existingIds);
+        const orderedIdSet = new Set(orderedEntryIds);
+        if (orderedIdSet.size !== orderedEntryIds.length || existingIdSet.size !== existingIds.length) {
+          emitError(socket, "Invalid pre-steal entry order.");
+          return;
+        }
+        for (const entryId of orderedEntryIds) {
+          if (!existingIdSet.has(entryId)) {
+            emitError(socket, "Invalid pre-steal entry order.");
+            return;
+          }
+        }
+
+        const entriesById = new Map(player.preStealEntries.map((entry) => [entry.id, entry]));
+        player.preStealEntries = orderedEntryIds
+          .map((entryId) => entriesById.get(entryId))
+          .filter((entry): entry is PreStealEntry => Boolean(entry));
+        emitGameState(roomId);
+      });
+    }
+  );
 
   socket.on("game:claim-intent", ({ roomId }: { roomId: string }) => {
     const playerId = getSocketData(socket).playerId;
@@ -1497,137 +1989,13 @@ io.on("connection", (socket) => {
           return;
         }
 
-        const wordCounts = countLetters(normalized);
-        const stealCandidates: Array<{
-          target: Word;
-          owner: Player;
-          selectedTiles: Tile[];
-          requiredTotal: number;
-        }> = [];
-        const extendCandidates: Array<{
-          target: Word;
-          owner: Player;
-          selectedTiles: Tile[];
-          requiredTotal: number;
-        }> = [];
-
-        for (const owner of game.players) {
-          for (const target of owner.words) {
-            const targetCounts = countLetters(target.text);
-            let isSubset = true;
-            for (const [letter, count] of Object.entries(targetCounts)) {
-              if ((wordCounts[letter] ?? 0) < count) {
-                isSubset = false;
-                break;
-              }
-            }
-            if (!isSubset) continue;
-
-            const required: Record<string, number> = {};
-            let requiredTotal = 0;
-            for (const [letter, count] of Object.entries(wordCounts)) {
-              const diff = count - (targetCounts[letter] ?? 0);
-              if (diff > 0) {
-                required[letter] = diff;
-                requiredTotal += diff;
-              }
-            }
-
-            if (requiredTotal < 1) continue;
-
-            const selectedTiles = selectTilesForCounts(required, game.centerTiles);
-            if (!selectedTiles) continue;
-
-            const candidate = {
-              target,
-              owner,
-              selectedTiles,
-              requiredTotal
-            };
-            if (normalized.includes(target.text)) {
-              continue;
-            }
-            if (owner.id === player.id) {
-              extendCandidates.push(candidate);
-            } else {
-              stealCandidates.push(candidate);
-            }
-          }
-        }
-
-        let selectedTiles: Tile[] | null = null;
-        let combinedTileIds: string[] = [];
-        let replacedWordOwner: Player | null = null;
-        let replacedWordId: string | null = null;
-
-        if (stealCandidates.length > 0) {
-          stealCandidates.sort((a, b) => {
-            if (a.requiredTotal !== b.requiredTotal) {
-              return a.requiredTotal - b.requiredTotal;
-            }
-            if (a.target.createdAt !== b.target.createdAt) {
-              return a.target.createdAt - b.target.createdAt;
-            }
-            return a.target.text.localeCompare(b.target.text);
-          });
-
-          const chosen = stealCandidates[0];
-          selectedTiles = chosen.selectedTiles;
-          combinedTileIds = [...chosen.target.tileIds, ...selectedTiles.map((tile) => tile.id)];
-
-          replacedWordOwner = chosen.owner;
-          replacedWordId = chosen.target.id;
-        } else if (extendCandidates.length > 0) {
-          extendCandidates.sort((a, b) => {
-            if (a.requiredTotal !== b.requiredTotal) {
-              return a.requiredTotal - b.requiredTotal;
-            }
-            if (a.target.createdAt !== b.target.createdAt) {
-              return a.target.createdAt - b.target.createdAt;
-            }
-            return a.target.text.localeCompare(b.target.text);
-          });
-
-          const chosen = extendCandidates[0];
-          selectedTiles = chosen.selectedTiles;
-          combinedTileIds = [...chosen.target.tileIds, ...selectedTiles.map((tile) => tile.id)];
-
-          replacedWordOwner = chosen.owner;
-          replacedWordId = chosen.target.id;
-        } else {
-          selectedTiles = selectTilesForWord(normalized, game.centerTiles);
-          if (!selectedTiles) {
-            clearClaimWindow(game);
-            startClaimCooldown(game, player.id);
-            emitError(socket, "Not enough tiles in the center to make that word.");
-            emitGameState(roomId);
-            return;
-          }
-          combinedTileIds = selectedTiles.map((tile) => tile.id);
-        }
-
-        const newWord: Word = {
-          id: randomUUID(),
-          text: normalized,
-          tileIds: combinedTileIds,
-          ownerId: player.id,
-          createdAt: Date.now()
-        };
-
-        if (replacedWordOwner && replacedWordId) {
-          replacedWordOwner.words = replacedWordOwner.words.filter(
-            (entry) => entry.id !== replacedWordId
-          );
-          updateScores(game);
-        }
-
-        player.words.push(newWord);
-        removeTilesFromCenter(game, selectedTiles.map((tile) => tile.id));
-        updateScores(game);
-
-        game.lastClaimAt = Date.now();
-        if (game.bag.length === 0) {
-          scheduleEndTimer(game);
+        const claimResult = executeClaim(game, player, normalized, "manual");
+        if (!claimResult) {
+          clearClaimWindow(game);
+          startClaimCooldown(game, player.id);
+          emitError(socket, "Not enough tiles in the center to make that word.");
+          emitGameState(roomId);
+          return;
         }
 
         clearClaimWindow(game);
@@ -1657,6 +2025,20 @@ io.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== "test") {
+  httpServer.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+  });
+}
+
+export {
+  areLetterCountsEqual,
+  countLetters,
+  entryMatchesExistingWord,
+  executeClaim,
+  getClaimSelection,
+  hasAllLetterCounts,
+  isPreStealEntryValid,
+  maybeRunAutoPreSteal,
+  revalidateAllPreStealEntries
+};
