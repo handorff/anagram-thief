@@ -843,6 +843,15 @@ button:disabled {
   border-color: rgba(244, 63, 94, 0.45);
 }
 
+.practice-start-modal {
+  gap: 1.1rem;
+}
+
+.practice-start-difficulty-picker {
+  display: flex;
+  justify-content: center;
+}
+
 .game-log {
   position: fixed;
   left: 0;

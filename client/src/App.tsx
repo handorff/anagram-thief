@@ -227,6 +227,8 @@ export default function App() {
 
   const [joinCode, setJoinCode] = useState("");
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
+  const [showPracticeStartPrompt, setShowPracticeStartPrompt] = useState(false);
+  const [practiceStartDifficulty, setPracticeStartDifficulty] = useState<PracticeDifficulty | null>(null);
 
   const [claimWord, setClaimWord] = useState("");
   const [practiceWord, setPracticeWord] = useState("");
@@ -559,10 +561,23 @@ export default function App() {
 
   const handleStartPractice = () => {
     if (roomState) return;
-    socket.emit("practice:start", {
-      difficulty: clampPracticeDifficulty(practiceState.queuedDifficulty)
-    });
+    setPracticeStartDifficulty(null);
+    setShowPracticeStartPrompt(true);
     setLobbyView("list");
+  };
+
+  const handleConfirmPracticeStart = () => {
+    if (practiceStartDifficulty === null) return;
+    socket.emit("practice:start", {
+      difficulty: practiceStartDifficulty
+    });
+    setShowPracticeStartPrompt(false);
+    setPracticeStartDifficulty(null);
+  };
+
+  const handleCancelPracticeStart = () => {
+    setShowPracticeStartPrompt(false);
+    setPracticeStartDifficulty(null);
   };
 
   const handlePracticeDifficultyChange = (value: number) => {
@@ -702,6 +717,12 @@ export default function App() {
     if (!practiceState.active) return;
     setJoinPrompt(null);
     setLobbyView("list");
+  }, [practiceState.active]);
+
+  useEffect(() => {
+    if (!practiceState.active) return;
+    setShowPracticeStartPrompt(false);
+    setPracticeStartDifficulty(null);
   }, [practiceState.active]);
 
   useEffect(() => {
@@ -1542,6 +1563,42 @@ export default function App() {
               </button>
               <button onClick={handleJoinWithCode} disabled={!joinCode.trim()}>
                 Join game
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPracticeStartPrompt && !practiceState.active && !roomState && (
+        <div className="join-overlay">
+          <div className="panel join-modal practice-start-modal">
+            <h2>Choose practice difficulty</h2>
+            <p className="muted">Pick a difficulty before starting your first puzzle.</p>
+            <div className="practice-start-difficulty-picker" role="group" aria-label="Practice difficulty">
+              <div className="practice-difficulty-segmented">
+                {[1, 2, 3, 4, 5].map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    className={
+                      practiceStartDifficulty === level
+                        ? "practice-difficulty-option active"
+                        : "practice-difficulty-option"
+                    }
+                    onClick={() => setPracticeStartDifficulty(level as PracticeDifficulty)}
+                    aria-pressed={practiceStartDifficulty === level}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="button-row">
+              <button className="button-secondary" onClick={handleCancelPracticeStart}>
+                Cancel
+              </button>
+              <button onClick={handleConfirmPracticeStart} disabled={practiceStartDifficulty === null}>
+                Start practice
               </button>
             </div>
           </div>
