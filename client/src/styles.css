@@ -211,6 +211,15 @@ input {
   font-size: 0.95rem;
 }
 
+select {
+  padding: 0.6rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.9);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
 button {
   padding: 0.6rem 1rem;
   border-radius: 12px;
@@ -700,6 +709,24 @@ button:disabled {
   place-items: center;
   padding: 2rem;
   z-index: 20;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.75);
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  z-index: 30;
+}
+
+.settings-modal {
+  width: min(460px, 92vw);
+}
+
+.settings-help {
+  font-size: 0.8rem;
 }
 
 .join-modal {
