@@ -1278,22 +1278,13 @@ export default function App() {
                       </div>
 
                       <div className="practice-options">
-                        <div className="word-header">
-                          <span>All possible words</span>
-                          <span className="muted">{practiceResult.allOptions.length}</span>
-                        </div>
                         {visiblePracticeOptions.map((option) => (
                           <div
                             key={`${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
                             className={getPracticeOptionClassName(option, practiceResult.submittedWordNormalized)}
                           >
                             <div>
-                              <strong>{option.word}</strong>
-                              <div className="muted">
-                                {option.source === "center"
-                                  ? `center claim (${option.baseScore})`
-                                  : `steal ${option.stolenFrom} (${option.baseScore} + ${option.stolenLetters})`}
-                              </div>
+                              <strong>{formatPracticeOptionLabel(option)}</strong>
                             </div>
                             <span className="score">{option.score}</span>
                           </div>
@@ -1674,4 +1665,31 @@ function getPracticeOptionClassName(
     return "practice-option submitted";
   }
   return "practice-option";
+}
+
+function formatPracticeOptionLabel(option: PracticeScoredWord): string {
+  if (option.source !== "steal" || !option.stolenFrom) {
+    return option.word;
+  }
+
+  const addedLetters = getAddedLettersForSteal(option.word, option.stolenFrom);
+  return `${option.word} (${option.stolenFrom} + ${addedLetters})`;
+}
+
+function getAddedLettersForSteal(word: string, stolenWord: string): string {
+  const remainingCounts: Record<string, number> = {};
+  for (const letter of stolenWord) {
+    remainingCounts[letter] = (remainingCounts[letter] ?? 0) + 1;
+  }
+
+  let addedLetters = "";
+  for (const letter of word) {
+    if ((remainingCounts[letter] ?? 0) > 0) {
+      remainingCounts[letter] -= 1;
+      continue;
+    }
+    addedLetters += letter;
+  }
+
+  return addedLetters;
 }
