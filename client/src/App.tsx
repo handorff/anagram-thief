@@ -162,6 +162,36 @@ function formatLogTime(timestamp: number) {
   });
 }
 
+function getPracticeResultCategory(result: PracticeResult): {
+  key: "perfect" | "amazing" | "great" | "good" | "ok" | "better-luck-next-time";
+  label: string;
+} {
+  if (result.score <= 0) {
+    return {
+      key: "better-luck-next-time",
+      label: "Better luck next time"
+    };
+  }
+  if (result.bestScore <= 0 || result.score === result.bestScore) {
+    return {
+      key: "perfect",
+      label: "Perfect"
+    };
+  }
+
+  const ratio = result.score / result.bestScore;
+  if (ratio >= 0.9) {
+    return { key: "amazing", label: "Amazing" };
+  }
+  if (ratio >= 0.75) {
+    return { key: "great", label: "Great" };
+  }
+  if (ratio >= 0.5) {
+    return { key: "good", label: "Good" };
+  }
+  return { key: "ok", label: "OK" };
+}
+
 function getPlayerName(players: Player[], playerId: string | null | undefined) {
   if (!playerId) return "Unknown";
   return players.find((player) => player.id === playerId)?.name ?? "Unknown";
@@ -480,6 +510,10 @@ export default function App() {
   const isInPractice = !roomState && practiceState.active;
   const practicePuzzle = practiceState.puzzle;
   const practiceResult = practiceState.result;
+  const practiceResultCategory = useMemo(
+    () => (practiceResult ? getPracticeResultCategory(practiceResult) : null),
+    [practiceResult]
+  );
   const {
     visiblePracticeOptions,
     hiddenPracticeOptionCount
@@ -1261,19 +1295,19 @@ export default function App() {
                   <div className="practice-result-panel">
                     <div className="practice-result">
                       <div className="practice-result-summary">
-                        <h3>Result</h3>
+                        <div className="practice-result-summary-header">
+                          <h3>Result</h3>
+                          {practiceResultCategory && (
+                            <span
+                              className={`practice-result-badge practice-result-badge-${practiceResultCategory.key}`}
+                            >
+                              {practiceResultCategory.label}
+                            </span>
+                          )}
+                        </div>
                         <p>
-                          Submitted: <strong>{practiceResult.submittedWordNormalized || "(empty)"}</strong>
-                        </p>
-                        <p>
-                          Score: <strong>{practiceResult.score}</strong> (best possible: {practiceResult.bestScore})
-                        </p>
-                        <p>
-                          {practiceResult.isValid
-                            ? practiceResult.isBestPlay
-                              ? "Best play found."
-                              : "Valid play, but not a best play."
-                            : `Invalid: ${practiceResult.invalidReason ?? "Unknown reason."}`}
+                          <strong>{practiceResult.submittedWordNormalized || "(empty)"}</strong>{" "}
+                          ({practiceResult.score}/{practiceResult.bestScore})
                         </p>
                       </div>
 
