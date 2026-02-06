@@ -873,6 +873,10 @@ io.on("connection", (socket) => {
 
     const submittedWord = typeof word === "string" ? word : "";
     const result: PracticeResult = practiceEngine.evaluateSubmission(practiceState.puzzle, submittedWord);
+    if (!result.isValid) {
+      emitError(socket, result.invalidReason ?? "Word is not valid.");
+      return;
+    }
     practiceState.phase = "result";
     practiceState.result = result;
     emitPracticeState(socket, currentSession.sessionId);

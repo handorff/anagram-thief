@@ -500,6 +500,12 @@ button:disabled {
   font-weight: 600;
 }
 
+.practice-submit-error {
+  color: #fecdd3;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
 .game-board {
   min-height: 60vh;
 }

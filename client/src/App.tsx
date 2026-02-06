@@ -262,6 +262,7 @@ export default function App() {
 
   const [claimWord, setClaimWord] = useState("");
   const [practiceWord, setPracticeWord] = useState("");
+  const [practiceSubmitError, setPracticeSubmitError] = useState<string | null>(null);
   const [showAllPracticeOptions, setShowAllPracticeOptions] = useState(false);
   const claimInputRef = useRef<HTMLInputElement>(null);
   const practiceInputRef = useRef<HTMLInputElement>(null);
@@ -270,6 +271,10 @@ export default function App() {
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
   const roomStatusRef = useRef<RoomState["status"] | null>(null);
   const hasGameStateRef = useRef(false);
+  const practiceModeRef = useRef<{ active: boolean; phase: PracticeModeState["phase"] }>({
+    active: false,
+    phase: "puzzle"
+  });
   const previousRoomIdRef = useRef<string | null>(null);
   const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
 
@@ -336,6 +341,13 @@ export default function App() {
   }, [roomState?.status, gameState]);
 
   useEffect(() => {
+    practiceModeRef.current = {
+      active: practiceState.active,
+      phase: practiceState.phase
+    };
+  }, [practiceState.active, practiceState.phase]);
+
+  useEffect(() => {
     const onConnect = () => {
       setIsConnected(true);
       socket.emit("room:list");
@@ -346,6 +358,11 @@ export default function App() {
     const onGameState = (state: GameState) => setGameState(state);
     const onPracticeState = (state: PracticeModeState) => setPracticeState(state);
     const onError = ({ message }: { message: string }) => {
+      if (practiceModeRef.current.active && practiceModeRef.current.phase === "puzzle") {
+        setPracticeSubmitError(message);
+        return;
+      }
+
       if (roomStatusRef.current !== "in-game" || !hasGameStateRef.current) {
         return;
       }
@@ -622,6 +639,7 @@ export default function App() {
 
   const handlePracticeSubmit = () => {
     if (!isInPractice || practiceState.phase !== "puzzle" || !practiceWord.trim()) return;
+    setPracticeSubmitError(null);
     socket.emit("practice:submit", { word: practiceWord });
   };
 
@@ -629,17 +647,20 @@ export default function App() {
     if (!isInPractice) return;
     socket.emit("practice:skip");
     setPracticeWord("");
+    setPracticeSubmitError(null);
   };
 
   const handlePracticeNext = () => {
     if (!isInPractice || practiceState.phase !== "result") return;
     socket.emit("practice:next");
     setPracticeWord("");
+    setPracticeSubmitError(null);
   };
 
   const handlePracticeExit = () => {
     socket.emit("practice:exit");
     setPracticeWord("");
+    setPracticeSubmitError(null);
   };
 
   const handleLeaveRoom = () => {
@@ -728,10 +749,12 @@ export default function App() {
   useEffect(() => {
     if (!practiceState.active) {
       setPracticeWord("");
+      setPracticeSubmitError(null);
       return;
     }
     if (practiceState.phase !== "puzzle") return;
     setPracticeWord("");
+    setPracticeSubmitError(null);
     requestAnimationFrame(() => practiceInputRef.current?.focus());
   }, [practiceState.active, practiceState.phase, practiceState.puzzle?.id]);
 
@@ -1265,7 +1288,12 @@ export default function App() {
                           <input
                             ref={practiceInputRef}
                             value={practiceWord}
-                            onChange={(event) => setPracticeWord(event.target.value)}
+                            onChange={(event) => {
+                              setPracticeWord(event.target.value);
+                              if (practiceSubmitError) {
+                                setPracticeSubmitError(null);
+                              }
+                            }}
                             onKeyDown={(event) => {
                               if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                                 event.preventDefault();
@@ -1278,6 +1306,11 @@ export default function App() {
                             Submit
                           </button>
                         </div>
+                        {practiceSubmitError && (
+                          <div className="practice-submit-error" role="alert">
+                            {practiceSubmitError}
+                          </div>
+                        )}
                       </div>
                       <div className="button-row">
                         <button className="button-secondary" onClick={handlePracticeSkip}>
