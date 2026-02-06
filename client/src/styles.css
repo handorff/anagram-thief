@@ -313,6 +313,78 @@ button:disabled {
   gap: 1.5rem;
 }
 
+.practice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.practice-board {
+  width: min(100%, 920px);
+  justify-self: center;
+}
+
+.practice-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.practice-difficulty-control {
+  gap: 0.55rem;
+}
+
+.practice-difficulty-control input[type="range"] {
+  width: 100%;
+}
+
+.practice-existing-words {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.practice-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.practice-result-summary {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(15, 23, 42, 0.45);
+  padding: 0.85rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.practice-result-summary p {
+  margin: 0;
+}
+
+.practice-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.practice-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.55rem 0.7rem;
+}
+
+.practice-option.submitted {
+  border-color: rgba(56, 189, 248, 0.8);
+  background: rgba(56, 189, 248, 0.18);
+}
+
 .game-board {
   min-height: 60vh;
 }
@@ -782,6 +854,11 @@ button:disabled {
   }
 
   .game-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .practice-header {
     flex-direction: column;
     align-items: flex-start;
   }

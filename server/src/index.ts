@@ -10,6 +10,10 @@ import type {
   GameState,
   PendingFlipState,
   Player,
+  PracticeDifficulty,
+  PracticeModeState,
+  PracticePuzzle,
+  PracticeResult,
   RoomState,
   RoomSummary,
   Tile,
@@ -17,6 +21,11 @@ import type {
 } from "../../shared/types.js";
 import { createTileBag } from "../../shared/tileBag.js";
 import { isValidWord, loadWordSet, normalizeWord } from "../../shared/wordValidation.js";
+import {
+  clampPracticeDifficulty,
+  createPracticeEngine,
+  DEFAULT_PRACTICE_DIFFICULTY
+} from "./practice.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,6 +69,7 @@ function resolveWordListPath(): string {
 const wordListPath = resolveWordListPath();
 const wordSet = loadWordSet(wordListPath);
 console.log(`[dictionary] Loaded ${wordSet.size} words from ${wordListPath}`);
+const practiceEngine = createPracticeEngine(wordSet);
 
 const app = express();
 app.use(cors());
@@ -124,12 +134,42 @@ type SocketData = {
   roomId?: string;
 };
 
+type PracticeModeStateInternal = PracticeModeState & {
+  puzzle: PracticePuzzle;
+};
+
 const rooms = new Map<string, RoomState>();
 const games = new Map<string, GameStateInternal>();
 const roomQueues = new Map<string, Promise<void>>();
 const sessionsById = new Map<string, SessionRecord>();
 const sessionsByPlayerId = new Map<string, SessionRecord>();
 const socketToSessionId = new Map<string, string>();
+const practiceBySessionId = new Map<string, PracticeModeStateInternal>();
+
+function createInactivePracticeState(
+  difficulty: PracticeDifficulty = DEFAULT_PRACTICE_DIFFICULTY
+): PracticeModeState {
+  return {
+    active: false,
+    phase: "puzzle",
+    currentDifficulty: difficulty,
+    queuedDifficulty: difficulty,
+    puzzle: null,
+    result: null
+  };
+}
+
+function getPracticeStateForSession(sessionId: string): PracticeModeState {
+  const existing = practiceBySessionId.get(sessionId);
+  if (!existing) {
+    return createInactivePracticeState();
+  }
+  return existing;
+}
+
+function emitPracticeState(socket: Socket, sessionId: string) {
+  socket.emit("practice:state", getPracticeStateForSession(sessionId));
+}
 
 function sanitizeName(name: string): string {
   const trimmed = name.trim();
@@ -758,9 +798,120 @@ io.on("connection", (socket) => {
     }
   }
   emitSessionSelf(socket, session);
+  emitPracticeState(socket, session.sessionId);
 
   socket.on("room:list", () => {
     socket.emit("room:list", Array.from(rooms.values()).map(getRoomSummary));
+  });
+
+  socket.on("practice:start", ({ difficulty }: { difficulty?: PracticeDifficulty }) => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+    if (getSocketData(socket).roomId) {
+      emitError(socket, "Leave your room before entering practice mode.");
+      return;
+    }
+
+    const resolvedDifficulty = clampPracticeDifficulty(difficulty);
+    const puzzle = practiceEngine.generatePuzzle(resolvedDifficulty);
+    const nextState: PracticeModeStateInternal = {
+      active: true,
+      phase: "puzzle",
+      currentDifficulty: resolvedDifficulty,
+      queuedDifficulty: resolvedDifficulty,
+      puzzle,
+      result: null
+    };
+    practiceBySessionId.set(currentSession.sessionId, nextState);
+    emitPracticeState(socket, currentSession.sessionId);
+  });
+
+  socket.on("practice:set-difficulty", ({ difficulty }: { difficulty: PracticeDifficulty }) => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+
+    const practiceState = practiceBySessionId.get(currentSession.sessionId);
+    if (!practiceState || !practiceState.active) {
+      emitError(socket, "Start practice mode first.");
+      return;
+    }
+
+    practiceState.queuedDifficulty = clampPracticeDifficulty(difficulty);
+    emitPracticeState(socket, currentSession.sessionId);
+  });
+
+  function advancePracticePuzzle(sessionId: string) {
+    const practiceState = practiceBySessionId.get(sessionId);
+    if (!practiceState || !practiceState.active) return false;
+
+    const nextDifficulty = practiceState.queuedDifficulty;
+    practiceState.currentDifficulty = nextDifficulty;
+    practiceState.phase = "puzzle";
+    practiceState.puzzle = practiceEngine.generatePuzzle(nextDifficulty);
+    practiceState.result = null;
+    return true;
+  }
+
+  socket.on("practice:submit", ({ word }: { word: string }) => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+
+    const practiceState = practiceBySessionId.get(currentSession.sessionId);
+    if (!practiceState || !practiceState.active || practiceState.phase !== "puzzle") {
+      emitError(socket, "No active puzzle to score.");
+      return;
+    }
+
+    const submittedWord = typeof word === "string" ? word : "";
+    const result: PracticeResult = practiceEngine.evaluateSubmission(practiceState.puzzle, submittedWord);
+    practiceState.phase = "result";
+    practiceState.result = result;
+    emitPracticeState(socket, currentSession.sessionId);
+  });
+
+  socket.on("practice:next", () => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+    if (!advancePracticePuzzle(currentSession.sessionId)) {
+      emitError(socket, "Start practice mode first.");
+      return;
+    }
+    emitPracticeState(socket, currentSession.sessionId);
+  });
+
+  socket.on("practice:skip", () => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+    if (!advancePracticePuzzle(currentSession.sessionId)) {
+      emitError(socket, "Start practice mode first.");
+      return;
+    }
+    emitPracticeState(socket, currentSession.sessionId);
+  });
+
+  socket.on("practice:exit", () => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+    practiceBySessionId.delete(currentSession.sessionId);
+    emitPracticeState(socket, currentSession.sessionId);
   });
 
   socket.on("session:update-name", ({ name }: { name: string }) => {
@@ -827,6 +978,10 @@ io.on("connection", (socket) => {
         emitError(socket, "Session not found.");
         return;
       }
+      if (getPracticeStateForSession(currentSession.sessionId).active) {
+        emitError(socket, "Exit practice mode before creating a room.");
+        return;
+      }
 
       if (getSocketData(socket).roomId) {
         emitError(socket, "You are already in a room.");
@@ -889,6 +1044,10 @@ io.on("connection", (socket) => {
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
+      return;
+    }
+    if (getPracticeStateForSession(currentSession.sessionId).active) {
+      emitError(socket, "Exit practice mode before joining a room.");
       return;
     }
 

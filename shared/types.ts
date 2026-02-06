@@ -76,3 +76,45 @@ export interface GameState {
   claimCooldowns: Record<string, number>;
   pendingFlip: PendingFlipState | null;
 }
+
+export type PracticeDifficulty = 1 | 2 | 3 | 4 | 5;
+
+export interface PracticeExistingWord {
+  id: string;
+  text: string;
+}
+
+export interface PracticePuzzle {
+  id: string;
+  centerTiles: Tile[];
+  existingWords: PracticeExistingWord[];
+}
+
+export interface PracticeScoredWord {
+  word: string;
+  score: number;
+  baseScore: number;
+  stolenLetters: number;
+  source: "center" | "steal";
+  stolenFrom?: string;
+}
+
+export interface PracticeResult {
+  submittedWordRaw: string;
+  submittedWordNormalized: string;
+  isValid: boolean;
+  isBestPlay: boolean;
+  score: number;
+  invalidReason?: string;
+  bestScore: number;
+  allOptions: PracticeScoredWord[];
+}
+
+export interface PracticeModeState {
+  active: boolean;
+  phase: "puzzle" | "result";
+  currentDifficulty: PracticeDifficulty;
+  queuedDifficulty: PracticeDifficulty;
+  puzzle: PracticePuzzle | null;
+  result: PracticeResult | null;
+}

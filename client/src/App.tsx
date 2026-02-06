@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import type { GameState, Player, RoomState, RoomSummary } from "@shared/types";
+import type {
+  GameState,
+  Player,
+  PracticeDifficulty,
+  PracticeModeState,
+  PracticeScoredWord,
+  RoomState,
+  RoomSummary
+} from "@shared/types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const SESSION_STORAGE_KEY = "anagram.sessionId";
@@ -63,6 +71,7 @@ function sanitizeClientName(name: string) {
   return trimmed.length > 0 ? trimmed.slice(0, 24) : "Player";
 }
 
+const DEFAULT_PRACTICE_DIFFICULTY: PracticeDifficulty = 3;
 const DEFAULT_FLIP_TIMER_SECONDS = 15;
 const MIN_FLIP_TIMER_SECONDS = 1;
 const MAX_FLIP_TIMER_SECONDS = 60;
@@ -80,6 +89,19 @@ const CLAIM_FAILURE_MESSAGES = new Set([
   "Word is not valid.",
   "Not enough tiles in the center to make that word."
 ]);
+
+function createInactivePracticeState(
+  difficulty: PracticeDifficulty = DEFAULT_PRACTICE_DIFFICULTY
+): PracticeModeState {
+  return {
+    active: false,
+    phase: "puzzle",
+    currentDifficulty: difficulty,
+    queuedDifficulty: difficulty,
+    puzzle: null,
+    result: null
+  };
+}
 
 type GameLogKind = "event" | "error";
 
@@ -121,6 +143,14 @@ function clampClaimTimerSeconds(value: number) {
   const rounded = Math.round(value);
   if (Number.isNaN(rounded)) return DEFAULT_CLAIM_TIMER_SECONDS;
   return Math.min(MAX_CLAIM_TIMER_SECONDS, Math.max(MIN_CLAIM_TIMER_SECONDS, rounded));
+}
+
+function clampPracticeDifficulty(value: number): PracticeDifficulty {
+  const rounded = Math.round(value);
+  if (Number.isNaN(rounded)) return DEFAULT_PRACTICE_DIFFICULTY;
+  if (rounded <= 1) return 1;
+  if (rounded >= 5) return 5;
+  return rounded as PracticeDifficulty;
 }
 
 function formatLogTime(timestamp: number) {
@@ -175,6 +205,9 @@ export default function App() {
   const [roomList, setRoomList] = useState<RoomSummary[]>([]);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const [practiceState, setPracticeState] = useState<PracticeModeState>(() =>
+    createInactivePracticeState()
+  );
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
   const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
 
@@ -196,7 +229,9 @@ export default function App() {
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
 
   const [claimWord, setClaimWord] = useState("");
+  const [practiceWord, setPracticeWord] = useState("");
   const claimInputRef = useRef<HTMLInputElement>(null);
+  const practiceInputRef = useRef<HTMLInputElement>(null);
   const gameLogListRef = useRef<HTMLDivElement>(null);
   const previousGameStateRef = useRef<GameState | null>(null);
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
@@ -276,6 +311,7 @@ export default function App() {
     const onRoomList = (rooms: RoomSummary[]) => setRoomList(rooms);
     const onRoomState = (state: RoomState) => setRoomState(state);
     const onGameState = (state: GameState) => setGameState(state);
+    const onPracticeState = (state: PracticeModeState) => setPracticeState(state);
     const onError = ({ message }: { message: string }) => {
       if (roomStatusRef.current !== "in-game" || !hasGameStateRef.current) {
         return;
@@ -323,6 +359,7 @@ export default function App() {
     socket.on("room:list", onRoomList);
     socket.on("room:state", onRoomState);
     socket.on("game:state", onGameState);
+    socket.on("practice:state", onPracticeState);
     socket.on("session:self", onSessionSelf);
     socket.on("error", onError);
 
@@ -336,6 +373,7 @@ export default function App() {
       socket.off("room:list", onRoomList);
       socket.off("room:state", onRoomState);
       socket.off("game:state", onGameState);
+      socket.off("practice:state", onPracticeState);
       socket.off("session:self", onSessionSelf);
       socket.off("error", onError);
     };
@@ -436,9 +474,13 @@ export default function App() {
     const winningScore = players.length > 0 ? players[0].score : null;
     return { players, winningScore };
   }, [gameState]);
+  const isInPractice = !roomState && practiceState.active;
+  const practicePuzzle = practiceState.puzzle;
+  const practiceResult = practiceState.result;
 
   const handleCreate = () => {
     if (!playerName) return;
+    if (practiceState.active) return;
     const flipTimerSeconds = clampFlipTimerSeconds(createFlipTimerSeconds);
     const claimTimerSeconds = clampClaimTimerSeconds(createClaimTimerSeconds);
     socket.emit("room:create", {
@@ -454,6 +496,7 @@ export default function App() {
 
   const handleJoinRoom = (room: RoomSummary) => {
     if (!playerName) return;
+    if (practiceState.active) return;
     if (room.status !== "lobby") return;
     if (room.playerCount >= room.maxPlayers) return;
     if (room.isPublic) {
@@ -479,6 +522,42 @@ export default function App() {
   const handleStart = () => {
     if (!roomState) return;
     socket.emit("room:start", { roomId: roomState.id });
+  };
+
+  const handleStartPractice = () => {
+    if (roomState) return;
+    socket.emit("practice:start", {
+      difficulty: clampPracticeDifficulty(practiceState.queuedDifficulty)
+    });
+    setLobbyView("list");
+  };
+
+  const handlePracticeDifficultyChange = (value: number) => {
+    socket.emit("practice:set-difficulty", {
+      difficulty: clampPracticeDifficulty(value)
+    });
+  };
+
+  const handlePracticeSubmit = () => {
+    if (!isInPractice || practiceState.phase !== "puzzle" || !practiceWord.trim()) return;
+    socket.emit("practice:submit", { word: practiceWord });
+  };
+
+  const handlePracticeSkip = () => {
+    if (!isInPractice) return;
+    socket.emit("practice:skip");
+    setPracticeWord("");
+  };
+
+  const handlePracticeNext = () => {
+    if (!isInPractice || practiceState.phase !== "result") return;
+    socket.emit("practice:next");
+    setPracticeWord("");
+  };
+
+  const handlePracticeExit = () => {
+    socket.emit("practice:exit");
+    setPracticeWord("");
   };
 
   const handleLeaveRoom = () => {
@@ -565,12 +644,28 @@ export default function App() {
   }, [isMyClaimWindow]);
 
   useEffect(() => {
+    if (!practiceState.active) {
+      setPracticeWord("");
+      return;
+    }
+    if (practiceState.phase !== "puzzle") return;
+    setPracticeWord("");
+    requestAnimationFrame(() => practiceInputRef.current?.focus());
+  }, [practiceState.active, practiceState.phase, practiceState.puzzle?.id]);
+
+  useEffect(() => {
     if (roomState) {
       setJoinPrompt(null);
       return;
     }
     setLobbyView("list");
   }, [roomState]);
+
+  useEffect(() => {
+    if (!practiceState.active) return;
+    setJoinPrompt(null);
+    setLobbyView("list");
+  }, [practiceState.active]);
 
   useEffect(() => {
     if (isInGame) return;
@@ -874,9 +969,9 @@ export default function App() {
         </div>
       </header>
 
-      {!roomState && lobbyView === "list" && (
+      {!roomState && !practiceState.active && lobbyView === "list" && (
         <div className="grid">
-          <section className="panel panel-narrow">
+          <section className="panel">
             <h2>Open Games</h2>
             <div className="room-list">
               {lobbyRooms.length === 0 && <p className="muted">No open games yet.</p>}
@@ -901,10 +996,21 @@ export default function App() {
               <button onClick={() => setLobbyView("create")}>Create new game</button>
             </div>
           </section>
+
+          <section className="panel">
+            <h2>Practice Mode</h2>
+            <p className="muted">
+              Train solo on one puzzle at a time. Submit your best play, then review every possible claim
+              and score.
+            </p>
+            <div className="button-row">
+              <button onClick={handleStartPractice}>Start practice</button>
+            </div>
+          </section>
         </div>
       )}
 
-      {!roomState && lobbyView === "create" && (
+      {!roomState && !practiceState.active && lobbyView === "create" && (
         <div className="grid">
           <section className="panel panel-narrow">
             <h2>New Game</h2>
@@ -977,6 +1083,156 @@ export default function App() {
             </div>
           </section>
 
+        </div>
+      )}
+
+      {isInPractice && (
+        <div className="practice">
+          <section className="panel practice-board">
+            <div className="practice-header">
+              <div>
+                <h2>Practice Mode</h2>
+                <p className="muted">Current puzzle difficulty: {practiceState.currentDifficulty}</p>
+              </div>
+              <button className="button-secondary" onClick={handlePracticeExit}>
+                Exit Practice
+              </button>
+            </div>
+
+            <label className="practice-difficulty-control">
+              <span>
+                Next puzzle difficulty: <strong>{practiceState.queuedDifficulty}</strong>
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={5}
+                step={1}
+                value={practiceState.queuedDifficulty}
+                onChange={(event) => handlePracticeDifficultyChange(Number(event.target.value))}
+              />
+            </label>
+
+            {practicePuzzle ? (
+              <>
+                <div>
+                  <h3>Center Tiles</h3>
+                </div>
+                <div className="tiles">
+                  {practicePuzzle.centerTiles.map((tile) => (
+                    <div key={tile.id} className="tile">
+                      {tile.letter}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="word-list practice-existing-words">
+                  <div className="word-header">
+                    <span>Existing words</span>
+                    <span className="muted">{practicePuzzle.existingWords.length}</span>
+                  </div>
+                  {practicePuzzle.existingWords.length === 0 && (
+                    <div className="muted">No existing words in this puzzle.</div>
+                  )}
+                  {practicePuzzle.existingWords.map((word) => (
+                    <div key={word.id} className="word-item">
+                      <div className="word-tiles" aria-label={word.text}>
+                        {word.text.split("").map((letter, index) => (
+                          <div key={`${word.id}-${index}`} className="tile word-tile">
+                            {letter.toUpperCase()}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {practiceState.phase === "puzzle" && (
+                  <>
+                    <div className="claim-box">
+                      <div className="claim-input">
+                        <input
+                          ref={practiceInputRef}
+                          value={practiceWord}
+                          onChange={(event) => setPracticeWord(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                              event.preventDefault();
+                              handlePracticeSubmit();
+                            }
+                          }}
+                          placeholder="Enter your best play"
+                        />
+                        <button onClick={handlePracticeSubmit} disabled={!practiceWord.trim()}>
+                          Submit
+                        </button>
+                      </div>
+                    </div>
+                    <div className="button-row">
+                      <button className="button-secondary" onClick={handlePracticeSkip}>
+                        Skip Puzzle
+                      </button>
+                      <button className="button-secondary" onClick={handlePracticeExit}>
+                        Exit Practice
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {practiceState.phase === "result" && practiceResult && (
+                  <div className="practice-result">
+                    <div className="practice-result-summary">
+                      <h3>Result</h3>
+                      <p>
+                        Submitted: <strong>{practiceResult.submittedWordNormalized || "(empty)"}</strong>
+                      </p>
+                      <p>
+                        Score: <strong>{practiceResult.score}</strong> (best possible: {practiceResult.bestScore})
+                      </p>
+                      <p>
+                        {practiceResult.isValid
+                          ? practiceResult.isBestPlay
+                            ? "Best play found."
+                            : "Valid play, but not a best play."
+                          : `Invalid: ${practiceResult.invalidReason ?? "Unknown reason."}`}
+                      </p>
+                    </div>
+
+                    <div className="practice-options">
+                      <div className="word-header">
+                        <span>All possible words</span>
+                        <span className="muted">{practiceResult.allOptions.length}</span>
+                      </div>
+                      {practiceResult.allOptions.map((option) => (
+                        <div
+                          key={`${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
+                          className={getPracticeOptionClassName(option, practiceResult.submittedWordNormalized)}
+                        >
+                          <div>
+                            <strong>{option.word}</strong>
+                            <div className="muted">
+                              {option.source === "center"
+                                ? `center claim (${option.baseScore})`
+                                : `steal ${option.stolenFrom} (${option.baseScore} + ${option.stolenLetters})`}
+                            </div>
+                          </div>
+                          <span className="score">{option.score}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="button-row">
+                      <button onClick={handlePracticeNext}>Next Puzzle</button>
+                      <button className="button-secondary" onClick={handlePracticeExit}>
+                        Exit Practice
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="muted">Loading puzzle...</div>
+            )}
+          </section>
         </div>
       )}
 
@@ -1289,4 +1545,14 @@ function getWordItemClassName(highlightKind: WordHighlightKind | undefined) {
     return "word-item word-item-claim";
   }
   return "word-item";
+}
+
+function getPracticeOptionClassName(
+  option: PracticeScoredWord,
+  submittedWordNormalized: string
+) {
+  if (option.word === submittedWordNormalized) {
+    return "practice-option submitted";
+  }
+  return "practice-option";
 }
