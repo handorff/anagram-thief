@@ -230,6 +230,7 @@ export default function App() {
 
   const [claimWord, setClaimWord] = useState("");
   const [practiceWord, setPracticeWord] = useState("");
+  const [showAllPracticeOptions, setShowAllPracticeOptions] = useState(false);
   const claimInputRef = useRef<HTMLInputElement>(null);
   const practiceInputRef = useRef<HTMLInputElement>(null);
   const gameLogListRef = useRef<HTMLDivElement>(null);
@@ -477,6 +478,38 @@ export default function App() {
   const isInPractice = !roomState && practiceState.active;
   const practicePuzzle = practiceState.puzzle;
   const practiceResult = practiceState.result;
+  const {
+    visiblePracticeOptions,
+    hiddenPracticeOptionCount
+  } = useMemo(() => {
+    if (!practiceResult) {
+      return {
+        visiblePracticeOptions: [] as PracticeScoredWord[],
+        hiddenPracticeOptionCount: 0
+      };
+    }
+
+    const allOptions = practiceResult.allOptions;
+    if (showAllPracticeOptions) {
+      return {
+        visiblePracticeOptions: allOptions,
+        hiddenPracticeOptionCount: 0
+      };
+    }
+
+    const submittedScore = practiceResult.score;
+    const firstLowerScoringIndex = allOptions.findIndex((option) => option.score < submittedScore);
+    const minimumVisibleCount = Math.min(3, allOptions.length);
+    const visibleCount = Math.min(
+      allOptions.length,
+      Math.max(minimumVisibleCount, firstLowerScoringIndex === -1 ? allOptions.length : firstLowerScoringIndex)
+    );
+
+    return {
+      visiblePracticeOptions: allOptions.slice(0, visibleCount),
+      hiddenPracticeOptionCount: allOptions.length - visibleCount
+    };
+  }, [practiceResult, showAllPracticeOptions]);
 
   const handleCreate = () => {
     if (!playerName) return;
@@ -652,6 +685,10 @@ export default function App() {
     setPracticeWord("");
     requestAnimationFrame(() => practiceInputRef.current?.focus());
   }, [practiceState.active, practiceState.phase, practiceState.puzzle?.id]);
+
+  useEffect(() => {
+    setShowAllPracticeOptions(false);
+  }, [practiceState.puzzle?.id, practiceResult?.submittedWordNormalized, practiceResult?.score]);
 
   useEffect(() => {
     if (roomState) {
@@ -1094,141 +1131,166 @@ export default function App() {
                 <h2>Practice Mode</h2>
                 <p className="muted">Current puzzle difficulty: {practiceState.currentDifficulty}</p>
               </div>
-              <button className="button-secondary" onClick={handlePracticeExit}>
-                Exit Practice
-              </button>
-            </div>
-
-            <label className="practice-difficulty-control">
-              <span>
-                Next puzzle difficulty: <strong>{practiceState.queuedDifficulty}</strong>
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={5}
-                step={1}
-                value={practiceState.queuedDifficulty}
-                onChange={(event) => handlePracticeDifficultyChange(Number(event.target.value))}
-              />
-            </label>
-
-            {practicePuzzle ? (
-              <>
-                <div>
-                  <h3>Center Tiles</h3>
-                </div>
-                <div className="tiles">
-                  {practicePuzzle.centerTiles.map((tile) => (
-                    <div key={tile.id} className="tile">
-                      {tile.letter}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="word-list practice-existing-words">
-                  <div className="word-header">
-                    <span>Existing words</span>
-                    <span className="muted">{practicePuzzle.existingWords.length}</span>
-                  </div>
-                  {practicePuzzle.existingWords.length === 0 && (
-                    <div className="muted">No existing words in this puzzle.</div>
-                  )}
-                  {practicePuzzle.existingWords.map((word) => (
-                    <div key={word.id} className="word-item">
-                      <div className="word-tiles" aria-label={word.text}>
-                        {word.text.split("").map((letter, index) => (
-                          <div key={`${word.id}-${index}`} className="tile word-tile">
-                            {letter.toUpperCase()}
-                          </div>
+              <div className="practice-header-actions">
+                {practiceState.phase === "result" && practiceResult && (
+                  <>
+                    <div className="practice-difficulty-control" aria-label="Next puzzle difficulty">
+                      <div className="practice-difficulty-segmented" role="group">
+                        {[1, 2, 3, 4, 5].map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            className={
+                              practiceState.queuedDifficulty === level
+                                ? "practice-difficulty-option active"
+                                : "practice-difficulty-option"
+                            }
+                            onClick={() => handlePracticeDifficultyChange(level)}
+                            aria-pressed={practiceState.queuedDifficulty === level}
+                          >
+                            {level}
+                          </button>
                         ))}
                       </div>
                     </div>
-                  ))}
-                </div>
-
-                {practiceState.phase === "puzzle" && (
-                  <>
-                    <div className="claim-box">
-                      <div className="claim-input">
-                        <input
-                          ref={practiceInputRef}
-                          value={practiceWord}
-                          onChange={(event) => setPracticeWord(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                              event.preventDefault();
-                              handlePracticeSubmit();
-                            }
-                          }}
-                          placeholder="Enter your best play"
-                        />
-                        <button onClick={handlePracticeSubmit} disabled={!practiceWord.trim()}>
-                          Submit
-                        </button>
-                      </div>
-                    </div>
-                    <div className="button-row">
-                      <button className="button-secondary" onClick={handlePracticeSkip}>
-                        Skip Puzzle
-                      </button>
-                      <button className="button-secondary" onClick={handlePracticeExit}>
-                        Exit Practice
-                      </button>
-                    </div>
+                    <button onClick={handlePracticeNext}>Next Puzzle</button>
                   </>
                 )}
+                <button className="button-secondary" onClick={handlePracticeExit}>
+                  Exit Practice
+                </button>
+              </div>
+            </div>
+
+            {practicePuzzle ? (
+              <div
+                className={
+                  practiceState.phase === "result" && practiceResult
+                    ? "practice-content result-layout"
+                    : "practice-content"
+                }
+              >
+                <div className="practice-puzzle-panel">
+                  <div>
+                    <h3>Center Tiles</h3>
+                  </div>
+                  <div className="tiles">
+                    {practicePuzzle.centerTiles.map((tile) => (
+                      <div key={tile.id} className="tile">
+                        {tile.letter}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="word-list practice-existing-words">
+                    <div className="word-header">
+                      <span>Existing words</span>
+                      <span className="muted">{practicePuzzle.existingWords.length}</span>
+                    </div>
+                    {practicePuzzle.existingWords.length === 0 && (
+                      <div className="muted">No existing words in this puzzle.</div>
+                    )}
+                    {practicePuzzle.existingWords.map((word) => (
+                      <div key={word.id} className="word-item">
+                        <div className="word-tiles" aria-label={word.text}>
+                          {word.text.split("").map((letter, index) => (
+                            <div key={`${word.id}-${index}`} className="tile word-tile">
+                              {letter.toUpperCase()}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {practiceState.phase === "puzzle" && (
+                    <>
+                      <div className="claim-box">
+                        <div className="claim-input">
+                          <input
+                            ref={practiceInputRef}
+                            value={practiceWord}
+                            onChange={(event) => setPracticeWord(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                                event.preventDefault();
+                                handlePracticeSubmit();
+                              }
+                            }}
+                            placeholder="Enter your best play"
+                          />
+                          <button onClick={handlePracticeSubmit} disabled={!practiceWord.trim()}>
+                            Submit
+                          </button>
+                        </div>
+                      </div>
+                      <div className="button-row">
+                        <button className="button-secondary" onClick={handlePracticeSkip}>
+                          Skip Puzzle
+                        </button>
+                        <button className="button-secondary" onClick={handlePracticeExit}>
+                          Exit Practice
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
 
                 {practiceState.phase === "result" && practiceResult && (
-                  <div className="practice-result">
-                    <div className="practice-result-summary">
-                      <h3>Result</h3>
-                      <p>
-                        Submitted: <strong>{practiceResult.submittedWordNormalized || "(empty)"}</strong>
-                      </p>
-                      <p>
-                        Score: <strong>{practiceResult.score}</strong> (best possible: {practiceResult.bestScore})
-                      </p>
-                      <p>
-                        {practiceResult.isValid
-                          ? practiceResult.isBestPlay
-                            ? "Best play found."
-                            : "Valid play, but not a best play."
-                          : `Invalid: ${practiceResult.invalidReason ?? "Unknown reason."}`}
-                      </p>
-                    </div>
-
-                    <div className="practice-options">
-                      <div className="word-header">
-                        <span>All possible words</span>
-                        <span className="muted">{practiceResult.allOptions.length}</span>
+                  <div className="practice-result-panel">
+                    <div className="practice-result">
+                      <div className="practice-result-summary">
+                        <h3>Result</h3>
+                        <p>
+                          Submitted: <strong>{practiceResult.submittedWordNormalized || "(empty)"}</strong>
+                        </p>
+                        <p>
+                          Score: <strong>{practiceResult.score}</strong> (best possible: {practiceResult.bestScore})
+                        </p>
+                        <p>
+                          {practiceResult.isValid
+                            ? practiceResult.isBestPlay
+                              ? "Best play found."
+                              : "Valid play, but not a best play."
+                            : `Invalid: ${practiceResult.invalidReason ?? "Unknown reason."}`}
+                        </p>
                       </div>
-                      {practiceResult.allOptions.map((option) => (
-                        <div
-                          key={`${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
-                          className={getPracticeOptionClassName(option, practiceResult.submittedWordNormalized)}
-                        >
-                          <div>
-                            <strong>{option.word}</strong>
-                            <div className="muted">
-                              {option.source === "center"
-                                ? `center claim (${option.baseScore})`
-                                : `steal ${option.stolenFrom} (${option.baseScore} + ${option.stolenLetters})`}
-                            </div>
-                          </div>
-                          <span className="score">{option.score}</span>
+
+                      <div className="practice-options">
+                        <div className="word-header">
+                          <span>All possible words</span>
+                          <span className="muted">{practiceResult.allOptions.length}</span>
                         </div>
-                      ))}
-                    </div>
-                    <div className="button-row">
-                      <button onClick={handlePracticeNext}>Next Puzzle</button>
-                      <button className="button-secondary" onClick={handlePracticeExit}>
-                        Exit Practice
-                      </button>
+                        {visiblePracticeOptions.map((option) => (
+                          <div
+                            key={`${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
+                            className={getPracticeOptionClassName(option, practiceResult.submittedWordNormalized)}
+                          >
+                            <div>
+                              <strong>{option.word}</strong>
+                              <div className="muted">
+                                {option.source === "center"
+                                  ? `center claim (${option.baseScore})`
+                                  : `steal ${option.stolenFrom} (${option.baseScore} + ${option.stolenLetters})`}
+                              </div>
+                            </div>
+                            <span className="score">{option.score}</span>
+                          </div>
+                        ))}
+                        {hiddenPracticeOptionCount > 0 && !showAllPracticeOptions && (
+                          <button
+                            type="button"
+                            className="practice-option-more"
+                            onClick={() => setShowAllPracticeOptions(true)}
+                          >
+                            more
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
-              </>
+              </div>
             ) : (
               <div className="muted">Loading puzzle...</div>
             )}
