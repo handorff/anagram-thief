@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import type { GameState, Player, RoomState, RoomSummary } from "@shared/types";
+import { useUserSettings, type InputMethod } from "./userSettings";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const SESSION_STORAGE_KEY = "anagram.sessionId";
@@ -180,8 +181,12 @@ export default function App() {
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
   const [nameDraft, setNameDraft] = useState(() => readStoredPlayerName());
-  const [editNameDraft, setEditNameDraft] = useState("");
-  const [isEditingName, setIsEditingName] = useState(false);
+  const { settings, updateSettings } = useUserSettings();
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsNameDraft, setSettingsNameDraft] = useState(() => readStoredPlayerName());
+  const [settingsInputMethodDraft, setSettingsInputMethodDraft] = useState<InputMethod>(
+    () => settings.inputMethod
+  );
   const [lobbyView, setLobbyView] = useState<"list" | "create">("list");
   const [joinPrompt, setJoinPrompt] = useState<{ roomId: string; roomName: string } | null>(null);
 
@@ -198,6 +203,8 @@ export default function App() {
   const [claimWord, setClaimWord] = useState("");
   const claimInputRef = useRef<HTMLInputElement>(null);
   const gameLogListRef = useRef<HTMLDivElement>(null);
+
+  const isKeyboardInput = settings.inputMethod === "keyboard";
   const previousGameStateRef = useRef<GameState | null>(null);
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
   const roomStatusRef = useRef<RoomState["status"] | null>(null);
@@ -302,7 +309,6 @@ export default function App() {
         if (sanitizedLocalName !== playerName) {
           setPlayerName(sanitizedLocalName);
           setNameDraft(sanitizedLocalName);
-          setEditNameDraft(sanitizedLocalName);
           persistPlayerName(sanitizedLocalName);
         }
         if (sanitizedLocalName !== name) {
@@ -314,7 +320,6 @@ export default function App() {
       if (resolvedName === "Player") return;
       setPlayerName(resolvedName);
       setNameDraft(resolvedName);
-      setEditNameDraft(resolvedName);
       persistPlayerName(resolvedName);
     };
 
@@ -340,6 +345,12 @@ export default function App() {
       socket.off("error", onError);
     };
   }, [appendGameLogEntries, playerName]);
+
+  useEffect(() => {
+    if (isSettingsOpen) return;
+    setSettingsNameDraft(playerName);
+    setSettingsInputMethodDraft(settings.inputMethod);
+  }, [isSettingsOpen, playerName, settings.inputMethod]);
 
   const currentPlayers: Player[] = useMemo(() => {
     if (gameState) return gameState.players;
@@ -501,33 +512,33 @@ export default function App() {
     const resolvedName = sanitizeClientName(nameDraft);
     setPlayerName(resolvedName);
     setNameDraft(resolvedName);
-    setEditNameDraft(resolvedName);
     persistPlayerName(resolvedName);
     socket.emit("session:update-name", { name: resolvedName });
   };
 
   const roomId = roomState?.id ?? null;
 
-  const handleStartEditName = () => {
-    setEditNameDraft(playerName);
-    setIsEditingName(true);
+  const handleOpenSettings = () => {
+    setSettingsNameDraft(playerName);
+    setSettingsInputMethodDraft(settings.inputMethod);
+    setIsSettingsOpen(true);
   };
 
-  const handleSaveEditName = () => {
-    const resolvedName = sanitizeClientName(editNameDraft);
+  const handleCloseSettings = () => {
+    setIsSettingsOpen(false);
+  };
+
+  const handleSaveSettings = () => {
+    const resolvedName = sanitizeClientName(settingsNameDraft);
     setPlayerName(resolvedName);
     setNameDraft(resolvedName);
-    setIsEditingName(false);
     persistPlayerName(resolvedName);
     socket.emit("session:update-name", { name: resolvedName });
     if (roomId) {
       socket.emit("player:update-name", { name: resolvedName });
     }
-  };
-
-  const handleCancelEditName = () => {
-    setEditNameDraft(playerName);
-    setIsEditingName(false);
+    updateSettings({ inputMethod: settingsInputMethodDraft });
+    setIsSettingsOpen(false);
   };
 
   const handleFlip = useCallback(() => {
@@ -540,9 +551,11 @@ export default function App() {
     if (!roomId) return;
     if (isFlipRevealActive) return;
     if (claimWindow || isClaimCooldownActive) return;
-    claimInputRef.current?.focus();
+    if (isKeyboardInput) {
+      claimInputRef.current?.focus();
+    }
     socket.emit("game:claim-intent", { roomId });
-  }, [roomId, isFlipRevealActive, claimWindow, isClaimCooldownActive]);
+  }, [roomId, isFlipRevealActive, claimWindow, isClaimCooldownActive, isKeyboardInput]);
 
   const handleClaimSubmit = useCallback(() => {
     if (!roomState) return;
@@ -553,16 +566,20 @@ export default function App() {
       word: claimWord
     });
     setClaimWord("");
-    requestAnimationFrame(() => claimInputRef.current?.focus());
-  }, [roomState, isMyClaimWindow, claimWord]);
+    if (isKeyboardInput) {
+      requestAnimationFrame(() => claimInputRef.current?.focus());
+    }
+  }, [roomState, isMyClaimWindow, claimWord, isKeyboardInput]);
 
   useEffect(() => {
     if (!isMyClaimWindow) {
       setClaimWord("");
       return;
     }
-    requestAnimationFrame(() => claimInputRef.current?.focus());
-  }, [isMyClaimWindow]);
+    if (isKeyboardInput) {
+      requestAnimationFrame(() => claimInputRef.current?.focus());
+    }
+  }, [isMyClaimWindow, isKeyboardInput]);
 
   useEffect(() => {
     if (roomState) {
@@ -578,7 +595,7 @@ export default function App() {
   }, [isInGame]);
 
   useEffect(() => {
-    if (!isInGame) return;
+    if (!isInGame || !isKeyboardInput) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat) return;
@@ -617,6 +634,7 @@ export default function App() {
     handleFlip,
     handleClaimIntent,
     isInGame,
+    isKeyboardInput,
     gameState?.turnPlayerId,
     selfPlayerId,
     isMyClaimWindow,
@@ -829,43 +847,10 @@ export default function App() {
         </div>
         <div className="status">
           <div className="status-identity">
-            {isEditingName ? (
-              <>
-                <input
-                  className="status-name-input"
-                  value={editNameDraft}
-                  onChange={(event) => setEditNameDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                      event.preventDefault();
-                      handleSaveEditName();
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      handleCancelEditName();
-                    }
-                  }}
-                  aria-label="Edit display name"
-                />
-                <button
-                  className="status-button"
-                  onClick={handleSaveEditName}
-                  disabled={!editNameDraft.trim()}
-                >
-                  Save
-                </button>
-                <button className="status-button ghost" onClick={handleCancelEditName}>
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="status-name">{playerName}</span>
-                <button className="icon-button" onClick={handleStartEditName} aria-label="Edit name">
-                  ✎
-                </button>
-              </>
-            )}
+            <span className="status-name">{playerName}</span>
+            <button className="icon-button" onClick={handleOpenSettings} aria-label="Open settings">
+              ⚙
+            </button>
           </div>
           <div className="status-connection">
             <span className={isConnected ? "dot online" : "dot"} />
@@ -873,6 +858,55 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {isSettingsOpen && (
+        <div className="settings-overlay" onClick={handleCloseSettings}>
+          <div
+            className="panel settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="settings-title">Settings</h2>
+            <label>
+              Display name
+              <input
+                value={settingsNameDraft}
+                onChange={(event) => setSettingsNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    handleSaveSettings();
+                  }
+                }}
+                placeholder="Player name"
+              />
+            </label>
+            <label>
+              Input method
+              <select
+                value={settingsInputMethodDraft}
+                onChange={(event) => setSettingsInputMethodDraft(event.target.value as InputMethod)}
+              >
+                <option value="keyboard">Keyboard</option>
+                <option value="pointer">Pointer/touch</option>
+              </select>
+              <span className="muted settings-help">
+                Keyboard enables key shortcuts and automatic claim focus.
+              </span>
+            </label>
+            <div className="button-row">
+              <button onClick={handleSaveSettings} disabled={!settingsNameDraft.trim()}>
+                Save settings
+              </button>
+              <button className="button-secondary" onClick={handleCloseSettings}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!roomState && lobbyView === "list" && (
         <div className="grid">
