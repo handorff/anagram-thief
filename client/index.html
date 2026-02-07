@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Anagram Thief</title>
+    <script>
+      try {
+        var s = JSON.parse(localStorage.getItem("anagram.userSettings") || "{}");
+        if (s.theme === "dark") {
+          document.documentElement.setAttribute("data-theme", "dark");
+          document.documentElement.style.colorScheme = "dark";
+        }
+      } catch(e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
