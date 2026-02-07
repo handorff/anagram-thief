@@ -37,6 +37,8 @@ const SESSION_STORAGE_KEY = "anagram.sessionId";
 const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
 const PRACTICE_SHARE_QUERY_PARAM = "practice";
 const PRACTICE_RESULT_SHARE_QUERY_PARAM = "practiceResult";
+const PRIVATE_ROOM_QUERY_PARAM = "room";
+const PRIVATE_ROOM_CODE_QUERY_PARAM = "code";
 const LETTER_PATTERN = /^[A-Z]+$/;
 const PENDING_RESULT_AUTO_SUBMIT_TTL_MS = 15_000;
 
@@ -100,6 +102,11 @@ type PendingResultAutoSubmit = {
   expiresAt: number;
 };
 
+type PendingPrivateRoomJoin = {
+  roomId: string;
+  code: string;
+};
+
 function buildPracticePuzzleFingerprint(payload: Pick<PracticeSharePayload, "c" | "w">): string {
   return `${payload.c}|${payload.w.join(",")}`;
 }
@@ -145,6 +152,15 @@ function readPendingSharedLaunchFromUrl(): PendingSharedLaunch | null {
   };
 }
 
+function readPendingPrivateRoomJoinFromUrl(): PendingPrivateRoomJoin | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const roomId = params.get(PRIVATE_ROOM_QUERY_PARAM)?.trim();
+  const code = params.get(PRIVATE_ROOM_CODE_QUERY_PARAM)?.trim();
+  if (!roomId || !code) return null;
+  return { roomId, code };
+}
+
 function removePracticeShareFromUrl() {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
@@ -154,6 +170,24 @@ function removePracticeShareFromUrl() {
   const search = params.toString();
   const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
   window.history.replaceState(window.history.state, "", nextUrl);
+}
+
+function removePrivateRoomJoinFromUrl() {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has(PRIVATE_ROOM_QUERY_PARAM) && !params.has(PRIVATE_ROOM_CODE_QUERY_PARAM)) return;
+  params.delete(PRIVATE_ROOM_QUERY_PARAM);
+  params.delete(PRIVATE_ROOM_CODE_QUERY_PARAM);
+  const search = params.toString();
+  const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
+  window.history.replaceState(window.history.state, "", nextUrl);
+}
+
+function buildPrivateRoomInviteUrl(roomId: string, code: string): string {
+  const inviteUrl = new URL(window.location.origin + window.location.pathname);
+  inviteUrl.searchParams.set(PRIVATE_ROOM_QUERY_PARAM, roomId);
+  inviteUrl.searchParams.set(PRIVATE_ROOM_CODE_QUERY_PARAM, code);
+  return inviteUrl.toString();
 }
 
 const sessionId = getOrCreateSessionId();
@@ -398,6 +432,9 @@ export default function App() {
   const [pendingSharedLaunch, setPendingSharedLaunch] = useState<PendingSharedLaunch | null>(() =>
     readPendingSharedLaunchFromUrl()
   );
+  const [pendingPrivateRoomJoin, setPendingPrivateRoomJoin] = useState<PendingPrivateRoomJoin | null>(() =>
+    readPendingPrivateRoomJoinFromUrl()
+  );
   const [pendingResultAutoSubmit, setPendingResultAutoSubmit] = useState<PendingResultAutoSubmit | null>(null);
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
   const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
@@ -410,7 +447,6 @@ export default function App() {
   const [userSettingsDraft, setUserSettingsDraft] = useState<UserSettings>(() => readStoredUserSettings());
   const [lobbyView, setLobbyView] = useState<"list" | "create" | "editor">("list");
   const [lobbyError, setLobbyError] = useState<string | null>(null);
-  const [joinPrompt, setJoinPrompt] = useState<{ roomId: string; roomName: string } | null>(null);
 
   const [createRoomName, setCreateRoomName] = useState("");
   const [createPublic, setCreatePublic] = useState(true);
@@ -420,7 +456,7 @@ export default function App() {
   const [createClaimTimerSeconds, setCreateClaimTimerSeconds] = useState(DEFAULT_CLAIM_TIMER_SECONDS);
   const [createPreStealEnabled, setCreatePreStealEnabled] = useState(false);
 
-  const [joinCode, setJoinCode] = useState("");
+  const [privateInviteCopyStatus, setPrivateInviteCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
   const [showPracticeStartPrompt, setShowPracticeStartPrompt] = useState(false);
   const [practiceStartDifficulty, setPracticeStartDifficulty] = useState<PracticeDifficulty | null>(null);
@@ -459,6 +495,7 @@ export default function App() {
   const practiceShareStatusTimeoutRef = useRef<number | null>(null);
   const practiceResultShareStatusTimeoutRef = useRef<number | null>(null);
   const editorShareStatusTimeoutRef = useRef<number | null>(null);
+  const privateInviteCopyStatusTimeoutRef = useRef<number | null>(null);
 
   const [now, setNow] = useState(Date.now());
 
@@ -530,6 +567,10 @@ export default function App() {
       if (editorShareStatusTimeoutRef.current !== null) {
         window.clearTimeout(editorShareStatusTimeoutRef.current);
         editorShareStatusTimeoutRef.current = null;
+      }
+      if (privateInviteCopyStatusTimeoutRef.current !== null) {
+        window.clearTimeout(privateInviteCopyStatusTimeoutRef.current);
+        privateInviteCopyStatusTimeoutRef.current = null;
       }
     };
   }, []);
@@ -928,6 +969,17 @@ export default function App() {
     }, 2_500);
   }, []);
 
+  const showPrivateInviteCopyStatus = useCallback((status: "copied" | "failed") => {
+    setPrivateInviteCopyStatus(status);
+    if (privateInviteCopyStatusTimeoutRef.current !== null) {
+      window.clearTimeout(privateInviteCopyStatusTimeoutRef.current);
+    }
+    privateInviteCopyStatusTimeoutRef.current = window.setTimeout(() => {
+      setPrivateInviteCopyStatus(null);
+      privateInviteCopyStatusTimeoutRef.current = null;
+    }, 2_500);
+  }, []);
+
   const editorValidationMessage = editorPuzzleDraft.validationMessage ?? editorValidationMessageFromServer;
   const isEditorPuzzleReady = editorPuzzleDraft.payload !== null;
   const editorTotalCharacters = useMemo(() => {
@@ -959,26 +1011,12 @@ export default function App() {
     if (!playerName) return;
     if (practiceState.active) return;
     if (room.status !== "lobby") return;
+    if (!room.isPublic) return;
     if (room.playerCount >= room.maxPlayers) return;
-    if (room.isPublic) {
-      setLobbyError(null);
-      socket.emit("room:join", {
-        roomId: room.id,
-        name: playerName
-      });
-      return;
-    }
-    setJoinCode("");
-    setJoinPrompt({ roomId: room.id, roomName: room.name });
-  };
-
-  const handleJoinWithCode = () => {
-    if (!playerName || !joinPrompt) return;
     setLobbyError(null);
     socket.emit("room:join", {
-      roomId: joinPrompt.roomId,
-      name: playerName,
-      code: joinCode.trim() || undefined
+      roomId: room.id,
+      name: playerName
     });
   };
 
@@ -1162,6 +1200,17 @@ export default function App() {
       showPracticeResultShareStatus("copied");
     } catch {
       showPracticeResultShareStatus("failed");
+    }
+  };
+
+  const handleCopyPrivateInviteUrl = async () => {
+    if (!roomState || roomState.isPublic || !roomState.code) return;
+    const inviteUrl = buildPrivateRoomInviteUrl(roomState.id, roomState.code);
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      showPrivateInviteCopyStatus("copied");
+    } catch {
+      showPrivateInviteCopyStatus("failed");
     }
   };
 
@@ -1419,6 +1468,31 @@ export default function App() {
   }, [pendingSharedLaunch, isConnected, roomState]);
 
   useEffect(() => {
+    if (!pendingPrivateRoomJoin) return;
+    if (!isConnected) return;
+    if (!playerName.trim()) return;
+    if (roomState) return;
+    if (practiceState.active) return;
+    if (pendingSharedLaunch) return;
+
+    setLobbyError(null);
+    socket.emit("room:join", {
+      roomId: pendingPrivateRoomJoin.roomId,
+      name: playerName,
+      code: pendingPrivateRoomJoin.code
+    });
+    setPendingPrivateRoomJoin(null);
+    removePrivateRoomJoinFromUrl();
+  }, [
+    pendingPrivateRoomJoin,
+    isConnected,
+    playerName,
+    roomState,
+    practiceState.active,
+    pendingSharedLaunch
+  ]);
+
+  useEffect(() => {
     if (!pendingResultAutoSubmit) return;
     if (pendingResultAutoSubmit.expiresAt <= now) {
       setPendingResultAutoSubmit(null);
@@ -1448,7 +1522,8 @@ export default function App() {
 
   useEffect(() => {
     if (roomState) {
-      setJoinPrompt(null);
+      setPendingPrivateRoomJoin(null);
+      removePrivateRoomJoinFromUrl();
       setLobbyError(null);
       setPendingResultAutoSubmit(null);
       return;
@@ -1466,7 +1541,6 @@ export default function App() {
 
   useEffect(() => {
     if (!practiceState.active) return;
-    setJoinPrompt(null);
     setLobbyView("list");
     setLobbyError(null);
   }, [practiceState.active]);
@@ -2226,6 +2300,17 @@ export default function App() {
             <p className="muted">Claim timer: {roomState.claimTimer.seconds}s</p>
             <p className="muted">Pre-steal: {roomState.preSteal.enabled ? "on" : "off"}</p>
             {!roomState.isPublic && roomState.code && <p className="muted">Code: {roomState.code}</p>}
+            {!roomState.isPublic && roomState.code && isHost && (
+              <div className="button-row">
+                <button className="button-secondary" type="button" onClick={handleCopyPrivateInviteUrl}>
+                  {privateInviteCopyStatus === "copied"
+                    ? "Copied!"
+                    : privateInviteCopyStatus === "failed"
+                      ? "Copy failed"
+                      : "Copy invite URL"}
+                </button>
+              </div>
+            )}
             <div className="player-list">
               {currentPlayers.map((player) => (
                 <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
@@ -2536,41 +2621,6 @@ export default function App() {
             ))}
           </div>
         </section>
-      )}
-
-      {joinPrompt && (
-        <div className="join-overlay">
-          <div className="panel join-modal">
-            <h2>Enter room code</h2>
-            <p className="muted">{joinPrompt.roomName} is private.</p>
-            <input
-              type="password"
-              value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing && joinCode.trim()) {
-                  e.preventDefault();
-                  handleJoinWithCode();
-                }
-              }}
-              placeholder="Room code"
-            />
-            <div className="button-row">
-              <button
-                className="button-secondary"
-                onClick={() => {
-                  setJoinPrompt(null);
-                  setJoinCode("");
-                }}
-              >
-                Cancel
-              </button>
-              <button onClick={handleJoinWithCode} disabled={!joinCode.trim()}>
-                Join game
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {showPracticeStartPrompt && !practiceState.active && !roomState && (

@@ -535,8 +535,14 @@ function getRoomSummary(room: RoomState): RoomSummary {
   };
 }
 
+function getDiscoverableRoomSummaries(): RoomSummary[] {
+  return Array.from(rooms.values())
+    .filter((room) => room.isPublic)
+    .map(getRoomSummary);
+}
+
 function broadcastRoomList() {
-  const summaries = Array.from(rooms.values()).map(getRoomSummary);
+  const summaries = getDiscoverableRoomSummaries();
   io.emit("room:list", summaries);
   scheduleStatePersist();
 }
@@ -1586,7 +1592,7 @@ io.on("connection", (socket) => {
   emitPracticeState(socket, session.sessionId);
 
   socket.on("room:list", () => {
-    socket.emit("room:list", Array.from(rooms.values()).map(getRoomSummary));
+    socket.emit("room:list", getDiscoverableRoomSummaries());
   });
 
   socket.on("practice:start", (request: PracticeStartRequest = {}) => {
