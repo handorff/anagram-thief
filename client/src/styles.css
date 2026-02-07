@@ -324,6 +324,52 @@ button:disabled {
   gap: 1.5rem;
 }
 
+.replay-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.replay-step-label {
+  font-weight: 700;
+  min-width: 7.5rem;
+}
+
+.replay-board-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.replay-board,
+.replay-scoreboard {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(15, 23, 42, 0.35);
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.replay-board-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.replay-pre-steal-panel {
+  margin-top: 0.25rem;
+}
+
 .practice {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1209,6 +1255,15 @@ button:disabled {
 
   .game {
     grid-template-columns: 1fr;
+  }
+
+  .replay-board-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .replay-board-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .header {

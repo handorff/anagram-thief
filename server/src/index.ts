@@ -8,10 +8,13 @@ import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import type {
   ClaimEventMeta,
+  GameReplay,
   GameState,
   PendingFlipState,
   Player,
   PreStealEntry,
+  ReplayStateSnapshot,
+  ReplayStepKind,
   PracticeDifficulty,
   PracticeModeState,
   PracticePuzzle,
@@ -132,6 +135,8 @@ type GameStateInternal = {
   preStealEnabled: boolean;
   preStealPrecedenceOrder: string[];
   lastClaimEvent: ClaimEventMeta | null;
+  replay: GameReplay;
+  lastReplaySnapshotHash: string | null;
 };
 
 type SessionRecord = {
@@ -186,6 +191,7 @@ type PersistedGameState = {
   preStealEnabled: boolean;
   preStealPrecedenceOrder: string[];
   lastClaimEvent: ClaimEventMeta | null;
+  replay?: GameReplay;
 };
 
 type PersistedSessionRecord = Omit<SessionRecord, "socketId">;
@@ -441,36 +447,39 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function toPersistedGameState(game: GameStateInternal): PersistedGameState {
+  return clone({
+    roomId: game.roomId,
+    status: game.status,
+    bag: game.bag,
+    centerTiles: game.centerTiles,
+    players: game.players,
+    turnOrder: game.turnOrder,
+    turnIndex: game.turnIndex,
+    turnPlayerId: game.turnPlayerId,
+    lastClaimAt: game.lastClaimAt,
+    endTimerEndsAt: game.endTimerEndsAt,
+    flipTimer: game.flipTimer,
+    flipTimerEndsAt: game.flipTimerEndsAt,
+    flipTimerToken: game.flipTimerToken,
+    pendingFlip: game.pendingFlip,
+    claimTimer: game.claimTimer,
+    claimWindow: game.claimWindow,
+    claimCooldowns: game.claimCooldowns,
+    preStealEnabled: game.preStealEnabled,
+    preStealPrecedenceOrder: game.preStealPrecedenceOrder,
+    lastClaimEvent: game.lastClaimEvent,
+    replay: game.replay
+  } satisfies PersistedGameState);
+}
+
 function getPersistedSnapshot(): PersistedSnapshotV1 {
   const activeRooms = Array.from(rooms.values()).filter((room) => room.status !== "ended");
   const activeRoomIds = new Set(activeRooms.map((room) => room.id));
   const persistedRooms = activeRooms.map((room) => clone(room as PersistedRoomState));
   const persistedGames = Array.from(games.values())
     .filter((game) => game.status !== "ended" && activeRoomIds.has(game.roomId))
-    .map((game) =>
-    clone({
-      roomId: game.roomId,
-      status: game.status,
-      bag: game.bag,
-      centerTiles: game.centerTiles,
-      players: game.players,
-      turnOrder: game.turnOrder,
-      turnIndex: game.turnIndex,
-      turnPlayerId: game.turnPlayerId,
-      lastClaimAt: game.lastClaimAt,
-      endTimerEndsAt: game.endTimerEndsAt,
-      flipTimer: game.flipTimer,
-      flipTimerEndsAt: game.flipTimerEndsAt,
-      flipTimerToken: game.flipTimerToken,
-      pendingFlip: game.pendingFlip,
-      claimTimer: game.claimTimer,
-      claimWindow: game.claimWindow,
-      claimCooldowns: game.claimCooldowns,
-      preStealEnabled: game.preStealEnabled,
-      preStealPrecedenceOrder: game.preStealPrecedenceOrder,
-      lastClaimEvent: game.lastClaimEvent
-    } satisfies PersistedGameState)
-    );
+    .map((game) => toPersistedGameState(game));
   const persistedSessions = Array.from(sessionsById.values()).map((session) =>
     clone({
       sessionId: session.sessionId,
@@ -586,6 +595,85 @@ function emitRoomState(roomId: string) {
 
 type GameStateViewerMode = "player" | "spectator";
 
+function buildReplaySnapshot(game: GameStateInternal): ReplayStateSnapshot {
+  return {
+    roomId: game.roomId,
+    status: game.status,
+    bagCount: game.bag.length,
+    centerTiles: clone(game.centerTiles),
+    players: game.players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      score: player.score,
+      words: clone(player.words),
+      preStealEntries: clone(player.preStealEntries)
+    })),
+    turnPlayerId: game.turnPlayerId,
+    claimWindow: game.claimWindow
+      ? { playerId: game.claimWindow.playerId, endsAt: game.claimWindow.endsAt }
+      : null,
+    claimCooldowns: { ...game.claimCooldowns },
+    pendingFlip: game.pendingFlip
+      ? {
+          playerId: game.pendingFlip.playerId,
+          startedAt: game.pendingFlip.startedAt,
+          revealsAt: game.pendingFlip.revealsAt
+        }
+      : null,
+    preStealEnabled: game.preStealEnabled,
+    preStealPrecedenceOrder: [...game.preStealPrecedenceOrder],
+    lastClaimEvent: game.lastClaimEvent ? { ...game.lastClaimEvent } : null,
+    endTimerEndsAt: game.endTimerEndsAt
+  };
+}
+
+function buildReplaySnapshotHash(snapshot: ReplayStateSnapshot): string {
+  return JSON.stringify(snapshot);
+}
+
+function appendReplayStepIfChanged(
+  game: GameStateInternal,
+  kind: ReplayStepKind,
+  at: number = Date.now()
+): boolean {
+  if (!game.replay || !Array.isArray(game.replay.steps)) {
+    game.replay = { steps: [] };
+  }
+  if (typeof game.lastReplaySnapshotHash !== "string") {
+    game.lastReplaySnapshotHash = null;
+  }
+
+  const snapshot = buildReplaySnapshot(game);
+  const snapshotHash = buildReplaySnapshotHash(snapshot);
+  if (snapshotHash === game.lastReplaySnapshotHash) {
+    return false;
+  }
+
+  game.replay.steps.push({
+    index: game.replay.steps.length,
+    at,
+    kind,
+    state: snapshot
+  });
+  game.lastReplaySnapshotHash = snapshotHash;
+  return true;
+}
+
+function normalizeReplay(replay: GameReplay | undefined): GameReplay {
+  if (!replay || !Array.isArray(replay.steps)) {
+    return { steps: [] };
+  }
+
+  return {
+    steps: replay.steps.map((step, index) => ({
+      index,
+      at: step.at,
+      kind: step.kind,
+      state: clone(step.state)
+    }))
+  };
+}
+
 function buildGameStateForViewer(
   game: GameStateInternal,
   viewerMode: GameStateViewerMode,
@@ -617,13 +705,17 @@ function buildGameStateForViewer(
       : null,
     preStealEnabled: game.preStealEnabled,
     preStealPrecedenceOrder: game.preStealPrecedenceOrder,
-    lastClaimEvent: game.lastClaimEvent
+    lastClaimEvent: game.lastClaimEvent,
+    replay: game.status === "ended" ? game.replay : null
   };
 }
 
-function emitGameState(roomId: string) {
+function emitGameState(roomId: string, replayStepKind?: ReplayStepKind) {
   const game = games.get(roomId);
   if (!game) return;
+  if (replayStepKind) {
+    appendReplayStepIfChanged(game, replayStepKind);
+  }
   const room = rooms.get(roomId);
 
   for (const player of game.players) {
@@ -1089,7 +1181,11 @@ function clearAllClaimCooldowns(game: GameStateInternal) {
   Object.keys(game.claimCooldowns).forEach((playerId) => clearClaimCooldown(game, playerId));
 }
 
-function startClaimCooldownAt(game: GameStateInternal, playerId: string, endsAt: number) {
+function startClaimCooldownAt(
+  game: GameStateInternal,
+  playerId: string,
+  endsAt: number
+) {
   clearClaimCooldown(game, playerId);
   game.claimCooldowns[playerId] = endsAt;
   const delayMs = Math.max(0, endsAt - Date.now());
@@ -1214,8 +1310,14 @@ function revealPendingFlip(game: GameStateInternal, token: string): boolean {
   if (!tile) return false;
   game.centerTiles.push(tile);
   game.lastClaimEvent = null;
+  appendReplayStepIfChanged(game, "flip-revealed");
+
   clearAllClaimCooldowns(game);
-  maybeRunAutoPreSteal(game);
+
+  const didAutoPreStealClaim = maybeRunAutoPreSteal(game);
+  if (didAutoPreStealClaim) {
+    appendReplayStepIfChanged(game, "claim-succeeded", game.lastClaimAt ?? Date.now());
+  }
   if (game.turnPlayerId === pendingFlip.playerId) {
     advanceTurn(game);
   }
@@ -1432,6 +1534,8 @@ function handlePlayerDisconnect(roomId: string, playerId: string) {
 }
 
 function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal {
+  const replay = normalizeReplay(persistedGame.replay);
+  const lastReplayStep = replay.steps[replay.steps.length - 1];
   return {
     roomId: persistedGame.roomId,
     status: persistedGame.status,
@@ -1457,7 +1561,9 @@ function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal 
     claimCooldownTimeouts: new Map(),
     preStealEnabled: persistedGame.preStealEnabled,
     preStealPrecedenceOrder: [...persistedGame.preStealPrecedenceOrder],
-    lastClaimEvent: persistedGame.lastClaimEvent ? { ...persistedGame.lastClaimEvent } : null
+    lastClaimEvent: persistedGame.lastClaimEvent ? { ...persistedGame.lastClaimEvent } : null,
+    replay,
+    lastReplaySnapshotHash: lastReplayStep ? buildReplaySnapshotHash(lastReplayStep.state) : null
   };
 }
 
@@ -2194,9 +2300,10 @@ io.on("connection", (socket) => {
       claimCooldownTimeouts: new Map(),
       preStealEnabled: room.preSteal?.enabled ?? false,
       preStealPrecedenceOrder: [...turnOrder],
-      lastClaimEvent: null
+      lastClaimEvent: null,
+      replay: { steps: [] },
+      lastReplaySnapshotHash: null
     };
-
     games.set(roomId, game);
     scheduleFlipTimer(game);
     emitRoomState(roomId);
@@ -2567,7 +2674,7 @@ io.on("connection", (socket) => {
         }
 
         clearClaimWindow(game);
-        emitGameState(roomId);
+        emitGameState(roomId, "claim-succeeded");
       });
     }
   );
@@ -2604,6 +2711,10 @@ if (process.env.NODE_ENV !== "test") {
 
 export {
   buildGameStateForViewer,
+  buildReplaySnapshot,
+  appendReplayStepIfChanged,
+  hydrateGameState,
+  toPersistedGameState,
   areLetterCountsEqual,
   countLetters,
   entryMatchesExistingWord,

@@ -92,6 +92,56 @@ export interface ClaimEventMeta {
   movedToBottomOfPreStealPrecedence: boolean;
 }
 
+export type ReplayStepKind =
+  | "game-start"
+  | "flip-started"
+  | "flip-revealed"
+  | "claim-window-opened"
+  | "claim-window-expired"
+  | "claim-succeeded"
+  | "cooldown-started"
+  | "cooldown-ended"
+  | "pre-steal-entry-added"
+  | "pre-steal-entry-removed"
+  | "pre-steal-entry-reordered"
+  | "end-countdown-started"
+  | "game-ended";
+
+export interface ReplayPlayerSnapshot {
+  id: string;
+  name: string;
+  score: number;
+  words: Word[];
+  preStealEntries: PreStealEntry[];
+}
+
+export interface ReplayStateSnapshot {
+  roomId: string;
+  status: "in-game" | "ended";
+  bagCount: number;
+  centerTiles: Tile[];
+  players: ReplayPlayerSnapshot[];
+  turnPlayerId: string;
+  claimWindow: ClaimWindowState | null;
+  claimCooldowns: Record<string, number>;
+  pendingFlip: PendingFlipState | null;
+  preStealEnabled: boolean;
+  preStealPrecedenceOrder: string[];
+  lastClaimEvent: ClaimEventMeta | null;
+  endTimerEndsAt?: number;
+}
+
+export interface ReplayStep {
+  index: number;
+  at: number;
+  kind: ReplayStepKind;
+  state: ReplayStateSnapshot;
+}
+
+export interface GameReplay {
+  steps: ReplayStep[];
+}
+
 export interface GameState {
   roomId: string;
   status: "in-game" | "ended";
@@ -107,6 +157,7 @@ export interface GameState {
   preStealEnabled: boolean;
   preStealPrecedenceOrder: string[];
   lastClaimEvent: ClaimEventMeta | null;
+  replay?: GameReplay | null;
 }
 
 export type PracticeDifficulty = 1 | 2 | 3 | 4 | 5;

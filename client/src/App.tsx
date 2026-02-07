@@ -10,6 +10,8 @@ import type {
   PracticeScoredWord,
   PracticeSharePayload,
   PracticeValidateCustomResponse,
+  ReplayPlayerSnapshot,
+  ReplayStateSnapshot,
   RoomState,
   RoomSummary
 } from "@shared/types";
@@ -358,12 +360,15 @@ function getPracticeResultCategory(result: PracticeResult): {
   return { key: "ok", label: "OK" };
 }
 
-function getPlayerName(players: Player[], playerId: string | null | undefined) {
+function getPlayerName<TPlayer extends { id: string; name: string }>(
+  players: TPlayer[],
+  playerId: string | null | undefined
+) {
   if (!playerId) return "Unknown";
   return players.find((player) => player.id === playerId)?.name ?? "Unknown";
 }
 
-function getWordSnapshots(players: Player[]): WordSnapshot[] {
+function getWordSnapshots(players: Array<{ id: string; words: { id: string; text: string; tileIds: string[]; createdAt: number }[] }>): WordSnapshot[] {
   const snapshots: WordSnapshot[] = [];
   for (const player of players) {
     for (const word of player.words) {
@@ -395,8 +400,12 @@ function findReplacedWord(addedWord: WordSnapshot, removedWords: WordSnapshot[])
   return matches[0];
 }
 
-function appendPreStealLogContext(text: string, gameState: GameState, wordId: string): string {
-  const claimEvent = gameState.lastClaimEvent;
+function appendPreStealLogContext(
+  text: string,
+  state: Pick<GameState, "lastClaimEvent">,
+  wordId: string
+): string {
+  const claimEvent = state.lastClaimEvent;
   if (!claimEvent || claimEvent.wordId !== wordId || claimEvent.source !== "pre-steal") {
     return text;
   }
@@ -420,12 +429,93 @@ function reorderEntriesById<T extends { id: string }>(items: T[], draggedId: str
   return next;
 }
 
+function buildReplayActionText(
+  replaySteps: NonNullable<GameState["replay"]>["steps"],
+  stepIndex: number
+): string {
+  const step = replaySteps[stepIndex];
+  if (!step) return "No replay action.";
+
+  const currentState = step.state;
+  const previousState = stepIndex > 0 ? replaySteps[stepIndex - 1]?.state ?? null : null;
+
+  if (step.kind === "flip-revealed") {
+    const previousCenterTileIds = new Set(previousState?.centerTiles.map((tile) => tile.id) ?? []);
+    const addedTiles = currentState.centerTiles.filter((tile) => !previousCenterTileIds.has(tile.id));
+    const flipperId = previousState?.pendingFlip?.playerId ?? previousState?.turnPlayerId ?? null;
+    const flipperName = getPlayerName(previousState?.players ?? currentState.players, flipperId);
+    if (addedTiles.length === 0) {
+      return `${flipperName} flipped a tile.`;
+    }
+    return addedTiles.map((tile) => `${flipperName} flipped ${tile.letter}.`).join(" ");
+  }
+
+  if (step.kind === "claim-succeeded") {
+    if (!previousState) {
+      return "A word was claimed.";
+    }
+
+    const previousWords = getWordSnapshots(previousState.players);
+    const currentWords = getWordSnapshots(currentState.players);
+    const previousWordMap = new Map(previousWords.map((word) => [word.id, word]));
+    const removedWords = previousWords.filter(
+      (word) => !currentWords.some((currentWord) => currentWord.id === word.id)
+    );
+    const addedWords = currentWords
+      .filter((word) => !previousWordMap.has(word.id))
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    const lines: string[] = [];
+    for (const addedWord of addedWords) {
+      const claimantName = getPlayerName(currentState.players, addedWord.ownerId);
+      const replacedWord = findReplacedWord(addedWord, removedWords);
+      if (!replacedWord) {
+        lines.push(appendPreStealLogContext(`${claimantName} claimed ${addedWord.text}.`, currentState, addedWord.id));
+        continue;
+      }
+
+      const removedWordIndex = removedWords.findIndex((word) => word.id === replacedWord.id);
+      if (removedWordIndex !== -1) {
+        removedWords.splice(removedWordIndex, 1);
+      }
+
+      if (replacedWord.ownerId === addedWord.ownerId) {
+        lines.push(
+          appendPreStealLogContext(
+            `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
+            currentState,
+            addedWord.id
+          )
+        );
+      } else {
+        const stolenFromName = getPlayerName(currentState.players, replacedWord.ownerId);
+        lines.push(
+          appendPreStealLogContext(
+            `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
+            currentState,
+            addedWord.id
+          )
+        );
+      }
+    }
+
+    if (lines.length > 0) {
+      return lines.join(" ");
+    }
+    return "A word was claimed.";
+  }
+
+  return "Replay action.";
+}
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [selfPlayerId, setSelfPlayerId] = useState<string | null>(null);
   const [roomList, setRoomList] = useState<RoomSummary[]>([]);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const [isReplayMode, setIsReplayMode] = useState(false);
+  const [replayStepIndex, setReplayStepIndex] = useState(0);
   const [practiceState, setPracticeState] = useState<PracticeModeState>(() =>
     createInactivePracticeState()
   );
@@ -795,8 +885,39 @@ export default function App() {
     : Boolean(claimWindow) || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isTileSelectionEnabled = isTileInputMethodEnabled && !isSpectator;
-  const shouldShowGameLog =
-    Boolean(gameState) && (roomState?.status === "in-game" || roomState?.status === "ended");
+  const shouldShowGameLog = Boolean(gameState) && roomState?.status === "in-game";
+  const replaySteps = useMemo(
+    () =>
+      (gameState?.replay?.steps ?? []).filter(
+        (step) => step.kind === "flip-revealed" || step.kind === "claim-succeeded"
+      ),
+    [gameState?.replay?.steps]
+  );
+  const maxReplayStepIndex = replaySteps.length > 0 ? replaySteps.length - 1 : 0;
+  const clampedReplayStepIndex = Math.min(Math.max(replayStepIndex, 0), maxReplayStepIndex);
+  const activeReplayStep = replaySteps[clampedReplayStepIndex] ?? null;
+  const activeReplayState: ReplayStateSnapshot | null = activeReplayStep?.state ?? null;
+  const activeReplayActionText = useMemo(
+    () => buildReplayActionText(replaySteps, clampedReplayStepIndex),
+    [replaySteps, clampedReplayStepIndex]
+  );
+  const replayTurnPlayerName = activeReplayState
+    ? getPlayerName(activeReplayState.players, activeReplayState.turnPlayerId)
+    : "Unknown";
+  const replayPreStealPlayers = useMemo(() => {
+    if (!activeReplayState) return [];
+    return activeReplayState.players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      preStealEntries: player.preStealEntries
+    }));
+  }, [activeReplayState]);
+  const replayPreStealPrecedencePlayers = useMemo(() => {
+    if (!activeReplayState) return [];
+    return activeReplayState.preStealPrecedenceOrder
+      .map((playerId) => activeReplayState.players.find((player) => player.id === playerId))
+      .filter((player): player is ReplayPlayerSnapshot => Boolean(player));
+  }, [activeReplayState]);
   const gameOverStandings = useMemo(() => {
     if (!gameState) {
       return { players: [] as Player[], winningScore: null as number | null };
@@ -1250,12 +1371,20 @@ export default function App() {
     socket.emit("room:leave");
     setRoomState(null);
     setGameState(null);
+    setIsReplayMode(false);
+    setReplayStepIndex(0);
     setGameLogEntries([]);
     setQueuedTileClaimLetters("");
     clearClaimWordHighlights();
     previousGameStateRef.current = null;
     lastClaimFailureRef.current = null;
   };
+
+  const handleEnterReplay = useCallback(() => {
+    if (replaySteps.length === 0) return;
+    setReplayStepIndex(0);
+    setIsReplayMode(true);
+  }, [replaySteps.length]);
 
   const handleConfirmLeaveGame = () => {
     setShowLeaveGameConfirm(false);
@@ -1577,7 +1706,25 @@ export default function App() {
     setPreStealTriggerInput("");
     setPreStealClaimWordInput("");
     setPreStealDraggedEntryId(null);
+    setIsReplayMode(false);
+    setReplayStepIndex(0);
   }, [roomState]);
+
+  useEffect(() => {
+    setReplayStepIndex((current) => Math.min(Math.max(current, 0), maxReplayStepIndex));
+  }, [maxReplayStepIndex]);
+
+  useEffect(() => {
+    if (!roomState || roomState.status !== "ended") {
+      setIsReplayMode(false);
+      setReplayStepIndex(0);
+      return;
+    }
+    if (replaySteps.length === 0) {
+      setIsReplayMode(false);
+      setReplayStepIndex(0);
+    }
+  }, [roomState, replaySteps.length]);
 
   useEffect(() => {
     if (!practiceState.active) return;
@@ -2673,23 +2820,6 @@ export default function App() {
               ))}
             </div>
 
-            {roomState?.spectators.length > 0 && (
-              <>
-                <div className="word-header">
-                  <span>Spectators</span>
-                  <span className="muted">{roomState.spectators.length}</span>
-                </div>
-                <div className="player-list">
-                  {roomState.spectators.map((spectator) => (
-                    <div key={spectator.id} className={spectator.id === selfPlayerId ? "player you" : "player"}>
-                      <span>{spectator.name}</span>
-                      {!spectator.connected && <span className="badge">offline</span>}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-
             <div className="words">
               {gameState.players.map((player) => (
                 <WordList
@@ -2706,28 +2836,177 @@ export default function App() {
 
       {roomState?.status === "ended" && gameState && (
         <div className="panel">
-          <h2>Game Over</h2>
-          <p className="muted">Final scores</p>
-          <div className="player-list">
-            {gameOverStandings.players.map((player) => {
-              const isWinner =
-                gameOverStandings.winningScore !== null && player.score === gameOverStandings.winningScore;
-              return (
-                <div key={player.id} className={isWinner ? "player winner" : "player"}>
-                  <div>
-                    <span>{player.name}</span>
-                    {isWinner && <span className="badge winner-badge">winner</span>}
+          {!isReplayMode && (
+            <>
+              <h2>Game Over</h2>
+              <p className="muted">Final scores</p>
+              <div className="player-list">
+                {gameOverStandings.players.map((player) => {
+                  const isWinner =
+                    gameOverStandings.winningScore !== null && player.score === gameOverStandings.winningScore;
+                  return (
+                    <div key={player.id} className={isWinner ? "player winner" : "player"}>
+                      <div>
+                        <span>{player.name}</span>
+                        {isWinner && <span className="badge winner-badge">winner</span>}
+                      </div>
+                      <span className="score">{player.score}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="button-row">
+                <button className="button-secondary" onClick={handleLeaveRoom}>
+                  Return to lobby
+                </button>
+                <button onClick={handleEnterReplay} disabled={replaySteps.length === 0}>
+                  Watch replay
+                </button>
+              </div>
+              {replaySteps.length === 0 && <p className="muted">Replay unavailable for this game.</p>}
+            </>
+          )}
+          {isReplayMode && activeReplayState && (
+            <div className="replay-panel">
+              <div className="button-row">
+                <button className="button-secondary" onClick={() => setIsReplayMode(false)}>
+                  Back to final scores
+                </button>
+                <button className="button-secondary" onClick={handleLeaveRoom}>
+                  Return to lobby
+                </button>
+              </div>
+              <div className="replay-controls">
+                <button
+                  className="button-secondary"
+                  onClick={() => setReplayStepIndex(0)}
+                  disabled={clampedReplayStepIndex <= 0}
+                >
+                  Start
+                </button>
+                <button
+                  className="button-secondary"
+                  onClick={() => setReplayStepIndex((current) => Math.max(0, current - 1))}
+                  disabled={clampedReplayStepIndex <= 0}
+                >
+                  Prev
+                </button>
+                <span className="replay-step-label">
+                  Step {clampedReplayStepIndex + 1} / {replaySteps.length}
+                </span>
+                <button
+                  className="button-secondary"
+                  onClick={() => setReplayStepIndex((current) => Math.min(maxReplayStepIndex, current + 1))}
+                  disabled={clampedReplayStepIndex >= maxReplayStepIndex}
+                >
+                  Next
+                </button>
+                <button
+                  className="button-secondary"
+                  onClick={() => setReplayStepIndex(maxReplayStepIndex)}
+                  disabled={clampedReplayStepIndex >= maxReplayStepIndex}
+                >
+                  End
+                </button>
+              </div>
+              <div className="replay-board-layout">
+                <section className="replay-board">
+                  <div className="replay-board-header">
+                    <div>
+                      <h3>Replay Board</h3>
+                      <p className="muted">{activeReplayActionText}</p>
+                    </div>
+                    <div className="turn">
+                      <span>Turn:</span>
+                      <strong>{replayTurnPlayerName}</strong>
+                    </div>
                   </div>
-                  <span className="score">{player.score}</span>
-                </div>
-              );
-            })}
-          </div>
-          <div className="button-row">
-            <button className="button-secondary" onClick={handleLeaveRoom}>
-              Return to lobby
-            </button>
-          </div>
+                  <p className="muted">Bag: {activeReplayState.bagCount} tiles</p>
+                  {activeReplayState.pendingFlip && (
+                    <p className="muted">
+                      {getPlayerName(activeReplayState.players, activeReplayState.pendingFlip.playerId)} is revealing
+                      a tile...
+                    </p>
+                  )}
+                  <div className="tiles">
+                    {activeReplayState.centerTiles.length === 0 && (
+                      <div className="muted">No tiles flipped yet.</div>
+                    )}
+                    {activeReplayState.centerTiles.map((tile) => (
+                      <div key={tile.id} className="tile">
+                        {tile.letter}
+                      </div>
+                    ))}
+                  </div>
+
+                  {activeReplayState.preStealEnabled && (
+                    <div className="pre-steal-panel replay-pre-steal-panel">
+                      <div className="pre-steal-layout">
+                        <div className="pre-steal-entries-column">
+                          <div className="word-header">
+                            <span>Pre-steal entries</span>
+                          </div>
+                          {replayPreStealPlayers.map((player) => (
+                            <div key={player.id} className="word-list">
+                              <div className="word-header">
+                                <span>{player.name}</span>
+                              </div>
+                              {player.preStealEntries.length === 0 && <div className="muted">No entries.</div>}
+                              {player.preStealEntries.map((entry) => (
+                                <div key={entry.id} className="pre-steal-entry">
+                                  <span className="pre-steal-entry-text">
+                                    {entry.triggerLetters}
+                                    {" -> "}
+                                    {entry.claimWord}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="pre-steal-precedence-column">
+                          <div className="word-header">
+                            <span>Precendence</span>
+                          </div>
+                          {replayPreStealPrecedencePlayers.length === 0 && (
+                            <div className="muted">No precedence order available.</div>
+                          )}
+                          {replayPreStealPrecedencePlayers.length > 0 && (
+                            <ol className="pre-steal-precedence-list">
+                              {replayPreStealPrecedencePlayers.map((player) => (
+                                <li key={player.id}>
+                                  <span>{player.name}</span>
+                                </li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </section>
+                <section className="replay-scoreboard">
+                  <h3>Scores & Words</h3>
+                  <div className="player-list">
+                    {activeReplayState.players.map((player) => (
+                      <div key={player.id} className="player">
+                        <div>
+                          <strong>{player.name}</strong>
+                          {player.id === activeReplayState.turnPlayerId && <span className="badge">turn</span>}
+                        </div>
+                        <span className="score">{player.score}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="words">
+                    {activeReplayState.players.map((player) => (
+                      <ReplayWordList key={player.id} player={player} />
+                    ))}
+                  </div>
+                </section>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2940,6 +3219,29 @@ function WordList({
                     : undefined
                 }
               >
+                {letter.toUpperCase()}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReplayWordList({ player }: { player: ReplayPlayerSnapshot }) {
+  return (
+    <div className="word-list">
+      <div className="word-header">
+        <span>{player.name}'s words</span>
+        <span className="muted">{player.words.length}</span>
+      </div>
+      {player.words.length === 0 && <div className="muted">No words yet.</div>}
+      {player.words.map((word) => (
+        <div key={word.id} className="word-item">
+          <div className="word-tiles" aria-label={word.text}>
+            {word.text.split("").map((letter, index) => (
+              <div key={`${word.id}-${index}`} className="tile word-tile">
                 {letter.toUpperCase()}
               </div>
             ))}
