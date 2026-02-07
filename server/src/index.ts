@@ -9,11 +9,16 @@ import { Server, Socket } from "socket.io";
 import type {
   ClaimEventMeta,
   GameReplay,
+  ReplayAnalysisBasis,
+  ReplayAnalysisResponse,
+  ReplayAnalysisResult,
   GameState,
   PendingFlipState,
   Player,
   PreStealEntry,
+  PracticeScoredWord,
   ReplayStateSnapshot,
+  ReplayStep,
   ReplayStepKind,
   PracticeDifficulty,
   PracticeModeState,
@@ -137,6 +142,7 @@ type GameStateInternal = {
   lastClaimEvent: ClaimEventMeta | null;
   replay: GameReplay;
   lastReplaySnapshotHash: string | null;
+  replayAnalysisCache: Map<number, ReplayAnalysisResult>;
 };
 
 type SessionRecord = {
@@ -671,6 +677,125 @@ function normalizeReplay(replay: GameReplay | undefined): GameReplay {
       kind: step.kind,
       state: clone(step.state)
     }))
+  };
+}
+
+type ReplayAnalysisBasisResolution =
+  | {
+      ok: true;
+      requestedStepIndex: number;
+      stepKind: ReplayStepKind;
+      basis: ReplayAnalysisBasis;
+      basisStepIndex: number;
+      basisStep: ReplayStep;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
+function buildPracticePuzzleFromReplayState(state: ReplayStateSnapshot): PracticePuzzle {
+  return {
+    id: `replay-${state.roomId}-${Date.now()}`,
+    centerTiles: clone(state.centerTiles),
+    existingWords: state.players.flatMap((player) =>
+      player.words.map((word) => ({
+        id: word.id,
+        text: word.text
+      }))
+    )
+  };
+}
+
+function resolveReplayAnalysisBasisStep(
+  game: Pick<GameStateInternal, "replay">,
+  requestedStepIndex: number
+): ReplayAnalysisBasisResolution {
+  if (!Number.isInteger(requestedStepIndex) || requestedStepIndex < 0) {
+    return {
+      ok: false,
+      message: "Replay step not found."
+    };
+  }
+
+  const requestedStep = game.replay.steps[requestedStepIndex];
+  if (!requestedStep) {
+    return {
+      ok: false,
+      message: "Replay step not found."
+    };
+  }
+
+  if (requestedStep.kind === "flip-revealed") {
+    return {
+      ok: true,
+      requestedStepIndex,
+      stepKind: requestedStep.kind,
+      basis: "step",
+      basisStepIndex: requestedStepIndex,
+      basisStep: requestedStep
+    };
+  }
+
+  if (requestedStep.kind === "claim-succeeded") {
+    const basisStepIndex = requestedStepIndex - 1;
+    if (basisStepIndex < 0) {
+      return {
+        ok: false,
+        message: "No prior replay state available for this claim."
+      };
+    }
+
+    const basisStep = game.replay.steps[basisStepIndex];
+    if (!basisStep) {
+      return {
+        ok: false,
+        message: "No prior replay state available for this claim."
+      };
+    }
+
+    return {
+      ok: true,
+      requestedStepIndex,
+      stepKind: requestedStep.kind,
+      basis: "before-claim",
+      basisStepIndex,
+      basisStep
+    };
+  }
+
+  return {
+    ok: false,
+    message: "Replay analysis is only available for revealed flips and successful claims."
+  };
+}
+
+function analyzeReplayStep(
+  game: Pick<GameStateInternal, "replay">,
+  requestedStepIndex: number,
+  solvePuzzle: (candidatePuzzle: PracticePuzzle) => PracticeScoredWord[]
+): ReplayAnalysisResponse {
+  const basisResolution = resolveReplayAnalysisBasisStep(game, requestedStepIndex);
+  if (!basisResolution.ok) {
+    return {
+      ok: false,
+      message: basisResolution.message
+    };
+  }
+
+  const puzzle = buildPracticePuzzleFromReplayState(basisResolution.basisStep.state);
+  const allOptions = solvePuzzle(puzzle);
+
+  return {
+    ok: true,
+    result: {
+      requestedStepIndex: basisResolution.requestedStepIndex,
+      stepKind: basisResolution.stepKind,
+      basis: basisResolution.basis,
+      basisStepIndex: basisResolution.basisStepIndex,
+      bestScore: allOptions[0]?.score ?? 0,
+      allOptions
+    }
   };
 }
 
@@ -1563,7 +1688,8 @@ function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal 
     preStealPrecedenceOrder: [...persistedGame.preStealPrecedenceOrder],
     lastClaimEvent: persistedGame.lastClaimEvent ? { ...persistedGame.lastClaimEvent } : null,
     replay,
-    lastReplaySnapshotHash: lastReplayStep ? buildReplaySnapshotHash(lastReplayStep.state) : null
+    lastReplaySnapshotHash: lastReplayStep ? buildReplaySnapshotHash(lastReplayStep.state) : null,
+    replayAnalysisCache: new Map()
   };
 }
 
@@ -1843,6 +1969,105 @@ io.on("connection", (socket) => {
       if (typeof callback === "function") {
         callback(response);
       }
+    }
+  );
+
+  socket.on(
+    "replay:analyze-step",
+    (
+      { roomId, stepIndex }: { roomId: string; stepIndex: number },
+      callback?: (response: ReplayAnalysisResponse) => void
+    ) => {
+      if (typeof callback !== "function") {
+        return;
+      }
+
+      const currentSession = getSessionBySocket(socket);
+      if (!currentSession) {
+        callback({
+          ok: false,
+          message: "Session not found."
+        });
+        return;
+      }
+
+      if (typeof roomId !== "string" || !roomId.trim()) {
+        callback({
+          ok: false,
+          message: "Room not found."
+        });
+        return;
+      }
+
+      if (currentSession.roomId !== roomId || getSocketData(socket).roomId !== roomId) {
+        callback({
+          ok: false,
+          message: "You are not in this room."
+        });
+        return;
+      }
+
+      const room = rooms.get(roomId);
+      if (!room) {
+        callback({
+          ok: false,
+          message: "Room not found."
+        });
+        return;
+      }
+
+      const isParticipant =
+        room.players.some((player) => player.id === currentSession.playerId) ||
+        room.spectators.some((spectator) => spectator.id === currentSession.playerId);
+      if (!isParticipant) {
+        callback({
+          ok: false,
+          message: "You are not in this room."
+        });
+        return;
+      }
+
+      const game = games.get(roomId);
+      if (!game) {
+        callback({
+          ok: false,
+          message: "Game not found."
+        });
+        return;
+      }
+
+      if (game.status !== "ended") {
+        callback({
+          ok: false,
+          message: "Replay analysis is available after game end."
+        });
+        return;
+      }
+
+      if (!Number.isInteger(stepIndex)) {
+        callback({
+          ok: false,
+          message: "Replay step not found."
+        });
+        return;
+      }
+
+      const cached = game.replayAnalysisCache.get(stepIndex);
+      if (cached) {
+        callback({
+          ok: true,
+          result: cached
+        });
+        return;
+      }
+
+      const response = analyzeReplayStep(game, stepIndex, (candidatePuzzle) =>
+        practiceEngine.solvePuzzle(candidatePuzzle)
+      );
+      if (response.ok) {
+        game.replayAnalysisCache.set(stepIndex, response.result);
+      }
+      callback(response);
     }
   );
 
@@ -2302,7 +2527,8 @@ io.on("connection", (socket) => {
       preStealPrecedenceOrder: [...turnOrder],
       lastClaimEvent: null,
       replay: { steps: [] },
-      lastReplaySnapshotHash: null
+      lastReplaySnapshotHash: null,
+      replayAnalysisCache: new Map()
     };
     games.set(roomId, game);
     scheduleFlipTimer(game);
@@ -2710,10 +2936,13 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 export {
+  analyzeReplayStep,
+  buildPracticePuzzleFromReplayState,
   buildGameStateForViewer,
   buildReplaySnapshot,
   appendReplayStepIfChanged,
   hydrateGameState,
+  resolveReplayAnalysisBasisStep,
   toPersistedGameState,
   areLetterCountsEqual,
   countLetters,

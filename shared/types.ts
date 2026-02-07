@@ -142,6 +142,27 @@ export interface GameReplay {
   steps: ReplayStep[];
 }
 
+export type ReplayAnalysisBasis = "step" | "before-claim";
+
+export interface ReplayAnalysisResult {
+  requestedStepIndex: number;
+  stepKind: ReplayStepKind;
+  basis: ReplayAnalysisBasis;
+  basisStepIndex: number;
+  bestScore: number;
+  allOptions: PracticeScoredWord[];
+}
+
+export type ReplayAnalysisResponse =
+  | {
+      ok: true;
+      result: ReplayAnalysisResult;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
 export interface GameState {
   roomId: string;
   status: "in-game" | "ended";
