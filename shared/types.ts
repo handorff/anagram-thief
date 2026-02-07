@@ -42,6 +42,12 @@ export interface Player {
   score: number;
 }
 
+export interface RoomSpectator {
+  id: string;
+  name: string;
+  connected: boolean;
+}
+
 export interface RoomSummary {
   id: string;
   name: string;
@@ -58,6 +64,7 @@ export interface RoomState {
   code?: string;
   hostId: string;
   players: Player[];
+  spectators: RoomSpectator[];
   status: RoomStatus;
   createdAt: number;
   flipTimer: FlipTimerSettings;

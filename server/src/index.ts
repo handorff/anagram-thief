@@ -19,6 +19,7 @@ import type {
   PracticeStartRequest,
   PracticeValidateCustomRequest,
   PracticeValidateCustomResponse,
+  RoomSpectator,
   RoomState,
   RoomSummary,
   Tile,
@@ -366,6 +367,35 @@ function getActiveSocketForPlayer(playerId: string): Socket | null {
   return io.sockets.sockets.get(session.socketId) ?? null;
 }
 
+function findSpectator(room: RoomState, spectatorId: string): RoomSpectator | undefined {
+  return room.spectators.find((spectator) => spectator.id === spectatorId);
+}
+
+function addSpectatorToRoom(room: RoomState, spectatorId: string, name: string): RoomSpectator {
+  const sanitizedName = sanitizeName(name);
+  const existing = findSpectator(room, spectatorId);
+  if (existing) {
+    existing.name = sanitizedName;
+    existing.connected = true;
+    return existing;
+  }
+
+  const spectator: RoomSpectator = {
+    id: spectatorId,
+    name: sanitizedName,
+    connected: true
+  };
+  room.spectators.push(spectator);
+  return spectator;
+}
+
+function removeSpectatorFromRoom(room: RoomState, spectatorId: string): boolean {
+  const index = room.spectators.findIndex((spectator) => spectator.id === spectatorId);
+  if (index === -1) return false;
+  room.spectators.splice(index, 1);
+  return true;
+}
+
 function setSessionRoom(session: SessionRecord, roomId: string | null) {
   session.roomId = roomId;
   if (!session.socketId) return;
@@ -537,7 +567,7 @@ function getRoomSummary(room: RoomState): RoomSummary {
 
 function getDiscoverableRoomSummaries(): RoomSummary[] {
   return Array.from(rooms.values())
-    .filter((room) => room.isPublic)
+    .filter((room) => room.isPublic && (room.status === "lobby" || room.status === "in-game"))
     .map(getRoomSummary);
 }
 
@@ -554,17 +584,22 @@ function emitRoomState(roomId: string) {
   scheduleStatePersist();
 }
 
-function emitGameState(roomId: string) {
-  const game = games.get(roomId);
-  if (!game) return;
-  const buildPublicState = (viewerPlayerId: string | null): GameState => ({
+type GameStateViewerMode = "player" | "spectator";
+
+function buildGameStateForViewer(
+  game: GameStateInternal,
+  viewerMode: GameStateViewerMode,
+  viewerPlayerId: string | null
+): GameState {
+  return {
     roomId: game.roomId,
     status: game.status,
     bagCount: game.bag.length,
     centerTiles: game.centerTiles,
     players: game.players.map((player) => ({
       ...player,
-      preStealEntries: viewerPlayerId === player.id ? player.preStealEntries : []
+      preStealEntries:
+        viewerMode === "spectator" || viewerPlayerId === player.id ? player.preStealEntries : []
     })),
     turnPlayerId: game.turnPlayerId,
     lastClaimAt: game.lastClaimAt,
@@ -583,12 +618,26 @@ function emitGameState(roomId: string) {
     preStealEnabled: game.preStealEnabled,
     preStealPrecedenceOrder: game.preStealPrecedenceOrder,
     lastClaimEvent: game.lastClaimEvent
-  });
+  };
+}
+
+function emitGameState(roomId: string) {
+  const game = games.get(roomId);
+  if (!game) return;
+  const room = rooms.get(roomId);
 
   for (const player of game.players) {
     const activeSocket = getActiveSocketForPlayer(player.id);
     if (!activeSocket) continue;
-    activeSocket.emit("game:state", buildPublicState(player.id));
+    activeSocket.emit("game:state", buildGameStateForViewer(game, "player", player.id));
+  }
+
+  if (room) {
+    for (const spectator of room.spectators) {
+      const activeSocket = getActiveSocketForPlayer(spectator.id);
+      if (!activeSocket) continue;
+      activeSocket.emit("game:state", buildGameStateForViewer(game, "spectator", spectator.id));
+    }
   }
   scheduleStatePersist();
 }
@@ -1210,8 +1259,8 @@ function selectNextHost(room: RoomState) {
 function cleanupRoom(roomId: string) {
   const room = rooms.get(roomId);
   if (room) {
-    room.players.forEach((player) => {
-      const session = sessionsByPlayerId.get(player.id);
+    [...room.players, ...room.spectators].forEach((participant) => {
+      const session = sessionsByPlayerId.get(participant.id);
       if (!session) return;
       if (session.roomId !== roomId) return;
       setSessionRoom(session, null);
@@ -1284,6 +1333,17 @@ function handlePlayerLeave(roomId: string, playerId: string) {
     }
   }
 
+  const isPlayer = room.players.some((player) => player.id === playerId);
+  const isSpectator = findSpectator(room, playerId) !== undefined;
+  if (!isPlayer && !isSpectator) return;
+
+  if (isSpectator) {
+    removeSpectatorFromRoom(room, playerId);
+    emitRoomState(roomId);
+    broadcastRoomList();
+    return;
+  }
+
   room.players = room.players.filter((player) => player.id !== playerId);
   if (room.hostId === playerId) {
     selectNextHost(room);
@@ -1337,7 +1397,14 @@ function handlePlayerDisconnect(roomId: string, playerId: string) {
   if (!room) return;
 
   const roomPlayer = room.players.find((player) => player.id === playerId);
-  if (!roomPlayer) return;
+  if (!roomPlayer) {
+    const spectator = findSpectator(room, playerId);
+    if (!spectator) return;
+    spectator.connected = false;
+    emitRoomState(roomId);
+    broadcastRoomList();
+    return;
+  }
   roomPlayer.connected = false;
   if (room.hostId === playerId) {
     selectNextHost(room);
@@ -1496,6 +1563,10 @@ async function hydrateStateFromRedis() {
         connected: false,
         preStealEntries: player.preStealEntries ?? []
       }));
+      room.spectators = (room.spectators ?? []).map((spectator) => ({
+        ...spectator,
+        connected: false
+      }));
       rooms.set(room.id, room);
     }
 
@@ -1566,9 +1637,8 @@ io.on("connection", (socket) => {
       setSessionRoom(session, null);
     } else {
       const roomPlayer = room.players.find((player) => player.id === session.playerId);
-      if (!roomPlayer) {
-        setSessionRoom(session, null);
-      } else {
+      const spectator = findSpectator(room, session.playerId);
+      if (roomPlayer) {
         roomPlayer.connected = true;
         roomPlayer.name = sanitizeName(session.name);
         socket.join(restoreRoomId);
@@ -1585,6 +1655,20 @@ io.on("connection", (socket) => {
         }
         emitRoomState(restoreRoomId);
         broadcastRoomList();
+      } else if (spectator) {
+        spectator.connected = true;
+        spectator.name = sanitizeName(session.name);
+        socket.join(restoreRoomId);
+        socketData.roomId = restoreRoomId;
+
+        const game = games.get(restoreRoomId);
+        if (game) {
+          emitGameState(restoreRoomId);
+        }
+        emitRoomState(restoreRoomId);
+        broadcastRoomList();
+      } else {
+        setSessionRoom(session, null);
       }
     }
   }
@@ -1775,6 +1859,11 @@ io.on("connection", (socket) => {
       roomPlayer.name = resolvedName;
       roomPlayer.connected = true;
     }
+    const spectator = findSpectator(room, currentSession.playerId);
+    if (spectator) {
+      spectator.name = resolvedName;
+      spectator.connected = true;
+    }
 
     const game = games.get(roomId);
     if (game) {
@@ -1858,6 +1947,7 @@ io.on("connection", (socket) => {
         code,
         hostId: currentSession.playerId,
         players: [player],
+        spectators: [],
         status: "lobby",
         createdAt: Date.now(),
         maxPlayers: Math.min(MAX_PLAYERS, Math.max(2, maxPlayers || MAX_PLAYERS)),
@@ -1947,6 +2037,59 @@ io.on("connection", (socket) => {
     broadcastRoomList();
   });
 
+  socket.on("room:spectate", ({ roomId }: { roomId: string }) => {
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+    if (getPracticeStateForSession(currentSession.sessionId).active) {
+      emitError(socket, "Exit practice mode before spectating.");
+      return;
+    }
+
+    if (getSocketData(socket).roomId) {
+      emitError(socket, "You are already in a room.");
+      return;
+    }
+
+    const room = rooms.get(roomId);
+    if (!room) {
+      emitError(socket, "Room not found.");
+      return;
+    }
+    if (!room.isPublic) {
+      emitError(socket, "This game is not public.");
+      return;
+    }
+    if (room.status !== "in-game") {
+      emitError(socket, "Only games in progress can be spectated.");
+      return;
+    }
+
+    const game = games.get(roomId);
+    if (!game || game.status !== "in-game") {
+      emitError(socket, "Game not found.");
+      return;
+    }
+    if (room.players.some((player) => player.id === currentSession.playerId)) {
+      emitError(socket, "You are already a player in this game.");
+      return;
+    }
+
+    const sanitizedName = sanitizeName(currentSession.name);
+    currentSession.name = sanitizedName;
+    setSessionRoom(currentSession, roomId);
+    getSocketData(socket).roomId = roomId;
+    socket.join(roomId);
+    addSpectatorToRoom(room, currentSession.playerId, sanitizedName);
+    emitSessionSelf(socket, currentSession);
+
+    emitRoomState(roomId);
+    emitGameState(roomId);
+    broadcastRoomList();
+  });
+
   socket.on("player:update-name", ({ name }: { name: string }) => {
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
@@ -1971,6 +2114,11 @@ io.on("connection", (socket) => {
     const roomPlayer = room.players.find((player) => player.id === currentSession.playerId);
     if (roomPlayer) {
       roomPlayer.name = resolvedName;
+    }
+    const spectator = findSpectator(room, currentSession.playerId);
+    if (spectator) {
+      spectator.name = resolvedName;
+      spectator.connected = true;
     }
 
     const game = games.get(roomId);
@@ -2455,6 +2603,7 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 export {
+  buildGameStateForViewer,
   areLetterCountsEqual,
   countLetters,
   entryMatchesExistingWord,

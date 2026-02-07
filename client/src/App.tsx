@@ -686,8 +686,21 @@ export default function App() {
       .map((playerId) => gameState.players.find((player) => player.id === playerId))
       .filter((player): player is Player => Boolean(player));
   }, [gameState]);
+  const spectatorPreStealPlayers = useMemo(() => {
+    if (!gameState) return [];
+    return gameState.players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      connected: player.connected,
+      preStealEntries: player.preStealEntries
+    }));
+  }, [gameState]);
 
-  const lobbyRooms = useMemo(() => roomList.filter((room) => room.status === "lobby"), [roomList]);
+  const openLobbyRooms = useMemo(() => roomList.filter((room) => room.status === "lobby"), [roomList]);
+  const inProgressLobbyRooms = useMemo(
+    () => roomList.filter((room) => room.status === "in-game"),
+    [roomList]
+  );
   const userSettingsContextValue = useMemo(
     () => buildUserSettingsContextValue(userSettings),
     [userSettings]
@@ -702,6 +715,10 @@ export default function App() {
 
   const isHost = roomState?.hostId === selfPlayerId;
   const isInGame = roomState?.status === "in-game" && gameState;
+  const isSpectator = useMemo(() => {
+    if (!roomState || !gameState || !selfPlayerId) return false;
+    return !gameState.players.some((player) => player.id === selfPlayerId);
+  }, [roomState, gameState, selfPlayerId]);
   const pendingFlip = gameState?.pendingFlip ?? null;
   const isFlipRevealActive = pendingFlip !== null;
   const flipRevealDurationMs = pendingFlip
@@ -741,6 +758,9 @@ export default function App() {
     return gameState.players.find((player) => player.id === claimWindow.playerId)?.name ?? "Unknown";
   }, [claimWindow, gameState]);
   const claimStatus = useMemo(() => {
+    if (isSpectator) {
+      return "Spectating (read-only)";
+    }
     if (isFlipRevealActive) {
       return `${flipRevealPlayerName} is revealing a tile...`;
     }
@@ -757,6 +777,7 @@ export default function App() {
       ? "Click or tap tiles to build a claim"
       : "Press enter to claim a word";
   }, [
+    isSpectator,
     isFlipRevealActive,
     flipRevealPlayerName,
     claimWindow,
@@ -768,11 +789,12 @@ export default function App() {
     isTileInputMethodEnabled
   ]);
   const claimPlaceholder = claimStatus;
-  const claimButtonLabel = isMyClaimWindow ? "Submit Claim" : "Start Claim";
+  const claimButtonLabel = isSpectator ? "Spectating" : isMyClaimWindow ? "Submit Claim" : "Start Claim";
   const isClaimButtonDisabled = isMyClaimWindow
     ? !claimWord.trim() || isFlipRevealActive
-    : Boolean(claimWindow) || isClaimCooldownActive || isFlipRevealActive;
-  const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive;
+    : Boolean(claimWindow) || isClaimCooldownActive || isFlipRevealActive || isSpectator;
+  const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive || isSpectator;
+  const isTileSelectionEnabled = isTileInputMethodEnabled && !isSpectator;
   const shouldShowGameLog =
     Boolean(gameState) && (roomState?.status === "in-game" || roomState?.status === "ended");
   const gameOverStandings = useMemo(() => {
@@ -1018,6 +1040,15 @@ export default function App() {
       roomId: room.id,
       name: playerName
     });
+  };
+
+  const handleSpectateRoom = (room: RoomSummary) => {
+    if (!playerName) return;
+    if (practiceState.active) return;
+    if (room.status !== "in-game") return;
+    if (!room.isPublic) return;
+    setLobbyError(null);
+    socket.emit("room:spectate", { roomId: room.id });
   };
 
   const handleStart = () => {
@@ -1271,21 +1302,24 @@ export default function App() {
 
   const handleFlip = useCallback(() => {
     if (!roomId) return;
+    if (isSpectator) return;
     if (isFlipRevealActive) return;
     socket.emit("game:flip", { roomId });
-  }, [roomId, isFlipRevealActive]);
+  }, [roomId, isSpectator, isFlipRevealActive]);
 
   const handleClaimIntent = useCallback(() => {
     if (!roomId) return;
+    if (isSpectator) return;
     if (isFlipRevealActive) return;
     if (claimWindow || isClaimCooldownActive) return;
     claimInputRef.current?.focus();
     socket.emit("game:claim-intent", { roomId });
-  }, [roomId, isFlipRevealActive, claimWindow, isClaimCooldownActive]);
+  }, [roomId, isSpectator, isFlipRevealActive, claimWindow, isClaimCooldownActive]);
 
   const handleClaimTileSelect = useCallback(
     (letter: string) => {
       if (!roomId) return;
+      if (isSpectator) return;
       if (!isTileInputMethodEnabled) return;
       const normalizedLetter = normalizeEditorText(letter).slice(0, 1);
       if (!normalizedLetter) return;
@@ -1302,6 +1336,7 @@ export default function App() {
     },
     [
       roomId,
+      isSpectator,
       isTileInputMethodEnabled,
       isMyClaimWindow,
       claimWindow,
@@ -1313,6 +1348,7 @@ export default function App() {
 
   const handleClaimSubmit = useCallback(() => {
     if (!roomState) return;
+    if (isSpectator) return;
     if (!isMyClaimWindow) return;
     if (!claimWord.trim()) return;
     socket.emit("game:claim", {
@@ -1321,9 +1357,10 @@ export default function App() {
     });
     setClaimWord("");
     requestAnimationFrame(() => claimInputRef.current?.focus());
-  }, [roomState, isMyClaimWindow, claimWord]);
+  }, [roomState, isSpectator, isMyClaimWindow, claimWord]);
 
   const handleAddPreStealEntry = useCallback(() => {
+    if (isSpectator) return;
     if (!roomState || !gameState?.preStealEnabled) return;
     const triggerLetters = preStealTriggerInput.trim();
     const claimWord = preStealClaimWordInput.trim();
@@ -1336,32 +1373,35 @@ export default function App() {
     });
     setPreStealTriggerInput("");
     setPreStealClaimWordInput("");
-  }, [roomState, gameState?.preStealEnabled, preStealTriggerInput, preStealClaimWordInput]);
+  }, [isSpectator, roomState, gameState?.preStealEnabled, preStealTriggerInput, preStealClaimWordInput]);
 
   const handleRemovePreStealEntry = useCallback(
     (entryId: string) => {
+      if (isSpectator) return;
       if (!roomState || !gameState?.preStealEnabled) return;
       socket.emit("game:pre-steal:remove", {
         roomId: roomState.id,
         entryId
       });
     },
-    [roomState, gameState?.preStealEnabled]
+    [isSpectator, roomState, gameState?.preStealEnabled]
   );
 
   const handleReorderPreStealEntries = useCallback(
     (orderedEntryIds: string[]) => {
+      if (isSpectator) return;
       if (!roomState || !gameState?.preStealEnabled) return;
       socket.emit("game:pre-steal:reorder", {
         roomId: roomState.id,
         orderedEntryIds
       });
     },
-    [roomState, gameState?.preStealEnabled]
+    [isSpectator, roomState, gameState?.preStealEnabled]
   );
 
   const handlePreStealEntryDrop = useCallback(
     (targetEntryId: string) => {
+      if (isSpectator) return;
       if (!preStealDraggedEntryId) return;
       const nextEntries = reorderEntriesById(myPreStealEntries, preStealDraggedEntryId, targetEntryId);
       const nextOrder = nextEntries.map((entry) => entry.id);
@@ -1371,7 +1411,7 @@ export default function App() {
       }
       setPreStealDraggedEntryId(null);
     },
-    [preStealDraggedEntryId, myPreStealEntries, handleReorderPreStealEntries]
+    [isSpectator, preStealDraggedEntryId, myPreStealEntries, handleReorderPreStealEntries]
   );
 
   useEffect(() => {
@@ -1559,7 +1599,7 @@ export default function App() {
   }, [isInGame]);
 
   useEffect(() => {
-    if (!isInGame) return;
+    if (!isInGame || isSpectator) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat) return;
@@ -1598,6 +1638,7 @@ export default function App() {
     handleFlip,
     handleClaimIntent,
     isInGame,
+    isSpectator,
     gameState?.turnPlayerId,
     selfPlayerId,
     isMyClaimWindow,
@@ -1839,8 +1880,8 @@ export default function App() {
           <section className="panel">
             <h2>Open Games</h2>
             <div className="room-list">
-              {lobbyRooms.length === 0 && <p className="muted">No open games yet.</p>}
-              {lobbyRooms.map((room) => {
+              {openLobbyRooms.length === 0 && <p className="muted">No open games yet.</p>}
+              {openLobbyRooms.map((room) => {
                 const isFull = room.playerCount >= room.maxPlayers;
                 return (
                   <div key={room.id} className="room-card">
@@ -1856,6 +1897,23 @@ export default function App() {
                   </div>
                 );
               })}
+            </div>
+            <h2>Games in Progress</h2>
+            <div className="room-list">
+              {inProgressLobbyRooms.length === 0 && <p className="muted">No games in progress.</p>}
+              {inProgressLobbyRooms.map((room) => (
+                <div key={room.id} className="room-card">
+                  <div>
+                    <strong>{room.name}</strong>
+                    <div className="muted">
+                      {room.playerCount} / {room.maxPlayers} • in progress
+                    </div>
+                  </div>
+                  <button className="button-secondary" onClick={() => handleSpectateRoom(room)}>
+                    Spectate
+                  </button>
+                </div>
+              ))}
             </div>
             <div className="button-row">
               <button onClick={() => setLobbyView("create")}>Create new game</button>
@@ -2359,7 +2417,7 @@ export default function App() {
                 </strong>
                 <button
                   onClick={handleFlip}
-                  disabled={gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive}
+                  disabled={isSpectator || gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive}
                 >
                   Flip Tile
                 </button>
@@ -2377,14 +2435,14 @@ export default function App() {
               {gameState.centerTiles.map((tile) => (
                 <div
                   key={tile.id}
-                  className={isTileInputMethodEnabled ? "tile tile-selectable" : "tile"}
-                  role={isTileInputMethodEnabled ? "button" : undefined}
-                  tabIndex={isTileInputMethodEnabled ? 0 : undefined}
+                  className={isTileSelectionEnabled ? "tile tile-selectable" : "tile"}
+                  role={isTileSelectionEnabled ? "button" : undefined}
+                  tabIndex={isTileSelectionEnabled ? 0 : undefined}
                   onClick={
-                    isTileInputMethodEnabled ? () => handleClaimTileSelect(tile.letter) : undefined
+                    isTileSelectionEnabled ? () => handleClaimTileSelect(tile.letter) : undefined
                   }
                   onKeyDown={
-                    isTileInputMethodEnabled
+                    isTileSelectionEnabled
                       ? (event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
@@ -2395,7 +2453,7 @@ export default function App() {
                       : undefined
                   }
                   aria-label={
-                    isTileInputMethodEnabled ? `Use letter ${tile.letter} for claim` : undefined
+                    isTileSelectionEnabled ? `Use letter ${tile.letter} for claim` : undefined
                   }
                 >
                   {tile.letter}
@@ -2460,85 +2518,137 @@ export default function App() {
 
             {gameState.preStealEnabled && (
               <div className="pre-steal-panel">
-                <div className="pre-steal-layout">
-                  <div className="pre-steal-entries-column">
-                    <div className="word-header">
-                      <span>Your pre-steal entries</span>
-                    </div>
-                    <div className="pre-steal-entry-form">
-                      <input
-                        value={preStealTriggerInput}
-                        onChange={(event) => setPreStealTriggerInput(event.target.value)}
-                        placeholder="Trigger letters"
-                      />
-                      <input
-                        value={preStealClaimWordInput}
-                        onChange={(event) => setPreStealClaimWordInput(event.target.value)}
-                        placeholder="Claim word"
-                      />
-                      <button
-                        className="button-secondary"
-                        onClick={handleAddPreStealEntry}
-                        disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
-                      >
-                        Add
-                      </button>
-                    </div>
-
-                    {myPreStealEntries.length === 0 && (
-                      <div className="muted">No pre-steal entries.</div>
-                    )}
-                    {myPreStealEntries.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="pre-steal-entry self"
-                        draggable
-                        onDragStart={(event) => {
-                          setPreStealDraggedEntryId(entry.id);
-                          event.dataTransfer.setData("text/plain", entry.id);
-                        }}
-                        onDragEnd={() => setPreStealDraggedEntryId(null)}
-                        onDragOver={(event) => {
-                          if (!preStealDraggedEntryId) return;
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = "move";
-                        }}
-                        onDrop={(event) => {
-                          event.preventDefault();
-                          handlePreStealEntryDrop(entry.id);
-                        }}
-                      >
-                        <span className="pre-steal-entry-text">
-                          {entry.triggerLetters}
-                          {" -> "}
-                          {entry.claimWord}
-                        </span>
-                        <button className="button-secondary" onClick={() => handleRemovePreStealEntry(entry.id)}>
-                          Remove
-                        </button>
+                {isSpectator ? (
+                  <div className="pre-steal-layout">
+                    <div className="pre-steal-entries-column">
+                      <div className="word-header">
+                        <span>Pre-steal entries</span>
                       </div>
-                    ))}
-                  </div>
-
-                  <div className="pre-steal-precedence-column">
-                    <div className="word-header">
-                      <span>Precendence</span>
-                    </div>
-                    {preStealPrecedencePlayers.length === 0 && (
-                      <div className="muted">No precedence order available.</div>
-                    )}
-                    {preStealPrecedencePlayers.length > 0 && (
-                      <ol className="pre-steal-precedence-list">
-                        {preStealPrecedencePlayers.map((player) => (
-                          <li key={player.id}>
+                      {spectatorPreStealPlayers.every((player) => player.preStealEntries.length === 0) && (
+                        <div className="muted">No pre-steal entries.</div>
+                      )}
+                      {spectatorPreStealPlayers.map((player) => (
+                        <div key={player.id} className="word-list">
+                          <div className="word-header">
                             <span>{player.name}</span>
                             {!player.connected && <span className="badge">offline</span>}
-                          </li>
-                        ))}
-                      </ol>
-                    )}
+                          </div>
+                          {player.preStealEntries.length === 0 && (
+                            <div className="muted">No entries.</div>
+                          )}
+                          {player.preStealEntries.map((entry) => (
+                            <div key={entry.id} className="pre-steal-entry">
+                              <span className="pre-steal-entry-text">
+                                {entry.triggerLetters}
+                                {" -> "}
+                                {entry.claimWord}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="pre-steal-precedence-column">
+                      <div className="word-header">
+                        <span>Precendence</span>
+                      </div>
+                      {preStealPrecedencePlayers.length === 0 && (
+                        <div className="muted">No precedence order available.</div>
+                      )}
+                      {preStealPrecedencePlayers.length > 0 && (
+                        <ol className="pre-steal-precedence-list">
+                          {preStealPrecedencePlayers.map((player) => (
+                            <li key={player.id}>
+                              <span>{player.name}</span>
+                              {!player.connected && <span className="badge">offline</span>}
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="pre-steal-layout">
+                    <div className="pre-steal-entries-column">
+                      <div className="word-header">
+                        <span>Your pre-steal entries</span>
+                      </div>
+                      <div className="pre-steal-entry-form">
+                        <input
+                          value={preStealTriggerInput}
+                          onChange={(event) => setPreStealTriggerInput(event.target.value)}
+                          placeholder="Trigger letters"
+                        />
+                        <input
+                          value={preStealClaimWordInput}
+                          onChange={(event) => setPreStealClaimWordInput(event.target.value)}
+                          placeholder="Claim word"
+                        />
+                        <button
+                          className="button-secondary"
+                          onClick={handleAddPreStealEntry}
+                          disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
+                        >
+                          Add
+                        </button>
+                      </div>
+
+                      {myPreStealEntries.length === 0 && (
+                        <div className="muted">No pre-steal entries.</div>
+                      )}
+                      {myPreStealEntries.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="pre-steal-entry self"
+                          draggable
+                          onDragStart={(event) => {
+                            setPreStealDraggedEntryId(entry.id);
+                            event.dataTransfer.setData("text/plain", entry.id);
+                          }}
+                          onDragEnd={() => setPreStealDraggedEntryId(null)}
+                          onDragOver={(event) => {
+                            if (!preStealDraggedEntryId) return;
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "move";
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            handlePreStealEntryDrop(entry.id);
+                          }}
+                        >
+                          <span className="pre-steal-entry-text">
+                            {entry.triggerLetters}
+                            {" -> "}
+                            {entry.claimWord}
+                          </span>
+                          <button className="button-secondary" onClick={() => handleRemovePreStealEntry(entry.id)}>
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="pre-steal-precedence-column">
+                      <div className="word-header">
+                        <span>Precendence</span>
+                      </div>
+                      {preStealPrecedencePlayers.length === 0 && (
+                        <div className="muted">No precedence order available.</div>
+                      )}
+                      {preStealPrecedencePlayers.length > 0 && (
+                        <ol className="pre-steal-precedence-list">
+                          {preStealPrecedencePlayers.map((player) => (
+                            <li key={player.id}>
+                              <span>{player.name}</span>
+                              {!player.connected && <span className="badge">offline</span>}
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -2547,7 +2657,7 @@ export default function App() {
             <div className="scoreboard-header">
               <h2>Players</h2>
               <button className="button-danger" onClick={() => setShowLeaveGameConfirm(true)}>
-                Leave Game
+                {isSpectator ? "Leave Spectate" : "Leave Game"}
               </button>
             </div>
             <div className="player-list">
@@ -2562,6 +2672,23 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {roomState?.spectators.length > 0 && (
+              <>
+                <div className="word-header">
+                  <span>Spectators</span>
+                  <span className="muted">{roomState.spectators.length}</span>
+                </div>
+                <div className="player-list">
+                  {roomState.spectators.map((spectator) => (
+                    <div key={spectator.id} className={spectator.id === selfPlayerId ? "player you" : "player"}>
+                      <span>{spectator.name}</span>
+                      {!spectator.connected && <span className="badge">offline</span>}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
 
             <div className="words">
               {gameState.players.map((player) => (
