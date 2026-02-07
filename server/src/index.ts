@@ -153,6 +153,50 @@ type PracticeModeStateInternal = PracticeModeState & {
   puzzleTimerToken?: string;
 };
 
+type PersistedRoomState = RoomState & { maxPlayers?: number };
+
+type PersistedGameState = {
+  roomId: string;
+  status: "in-game" | "ended";
+  bag: Tile[];
+  centerTiles: Tile[];
+  players: Player[];
+  turnOrder: string[];
+  turnIndex: number;
+  turnPlayerId: string;
+  lastClaimAt: number | null;
+  endTimerEndsAt?: number;
+  flipTimer: {
+    enabled: boolean;
+    seconds: number;
+  };
+  flipTimerEndsAt?: number;
+  flipTimerToken?: string;
+  pendingFlip: (PendingFlipState & { token: string }) | null;
+  claimTimer: {
+    seconds: number;
+  };
+  claimWindow: {
+    playerId: string;
+    endsAt: number;
+    token: string;
+  } | null;
+  claimCooldowns: Record<string, number>;
+  preStealEnabled: boolean;
+  preStealPrecedenceOrder: string[];
+  lastClaimEvent: ClaimEventMeta | null;
+};
+
+type PersistedSessionRecord = Omit<SessionRecord, "socketId">;
+
+type PersistedSnapshotV1 = {
+  version: 1;
+  savedAt: number;
+  rooms: PersistedRoomState[];
+  games: PersistedGameState[];
+  sessions: PersistedSessionRecord[];
+};
+
 const rooms = new Map<string, RoomState>();
 const games = new Map<string, GameStateInternal>();
 const roomQueues = new Map<string, Promise<void>>();
@@ -160,6 +204,17 @@ const sessionsById = new Map<string, SessionRecord>();
 const sessionsByPlayerId = new Map<string, SessionRecord>();
 const socketToSessionId = new Map<string, string>();
 const practiceBySessionId = new Map<string, PracticeModeStateInternal>();
+
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL?.trim() ?? "";
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ?? "";
+const UPSTASH_STATE_KEY = process.env.UPSTASH_REDIS_STATE_KEY?.trim() || "anagram:active-state:v1";
+const redisPersistenceEnabled = Boolean(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN);
+
+if ((UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_TOKEN) && !redisPersistenceEnabled) {
+  console.warn(
+    "[persistence] Redis persistence disabled. Set both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN."
+  );
+}
 
 function createInactivePracticeState(
   difficulty: PracticeDifficulty = DEFAULT_PRACTICE_DIFFICULTY
@@ -295,6 +350,7 @@ function emitSessionSelf(socket: Socket, session: SessionRecord) {
     name: session.name,
     roomId: session.roomId
   });
+  scheduleStatePersist();
 }
 
 function getSessionBySocket(socket: Socket): SessionRecord | null {
@@ -337,6 +393,137 @@ function bindSocketToSession(socket: Socket, session: SessionRecord) {
   }
 }
 
+let isHydratingState = false;
+let persistScheduled = false;
+let persistQueue = Promise.resolve();
+
+function isPersistedSnapshotV1(value: unknown): value is PersistedSnapshotV1 {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<PersistedSnapshotV1>;
+  if (candidate.version !== 1) return false;
+  if (!Array.isArray(candidate.rooms)) return false;
+  if (!Array.isArray(candidate.games)) return false;
+  if (!Array.isArray(candidate.sessions)) return false;
+  return true;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function getPersistedSnapshot(): PersistedSnapshotV1 {
+  const activeRooms = Array.from(rooms.values()).filter((room) => room.status !== "ended");
+  const activeRoomIds = new Set(activeRooms.map((room) => room.id));
+  const persistedRooms = activeRooms.map((room) => clone(room as PersistedRoomState));
+  const persistedGames = Array.from(games.values())
+    .filter((game) => game.status !== "ended" && activeRoomIds.has(game.roomId))
+    .map((game) =>
+    clone({
+      roomId: game.roomId,
+      status: game.status,
+      bag: game.bag,
+      centerTiles: game.centerTiles,
+      players: game.players,
+      turnOrder: game.turnOrder,
+      turnIndex: game.turnIndex,
+      turnPlayerId: game.turnPlayerId,
+      lastClaimAt: game.lastClaimAt,
+      endTimerEndsAt: game.endTimerEndsAt,
+      flipTimer: game.flipTimer,
+      flipTimerEndsAt: game.flipTimerEndsAt,
+      flipTimerToken: game.flipTimerToken,
+      pendingFlip: game.pendingFlip,
+      claimTimer: game.claimTimer,
+      claimWindow: game.claimWindow,
+      claimCooldowns: game.claimCooldowns,
+      preStealEnabled: game.preStealEnabled,
+      preStealPrecedenceOrder: game.preStealPrecedenceOrder,
+      lastClaimEvent: game.lastClaimEvent
+    } satisfies PersistedGameState)
+    );
+  const persistedSessions = Array.from(sessionsById.values()).map((session) =>
+    clone({
+      sessionId: session.sessionId,
+      playerId: session.playerId,
+      name: session.name,
+      roomId: session.roomId && activeRoomIds.has(session.roomId) ? session.roomId : null
+    } satisfies PersistedSessionRecord)
+  );
+
+  return {
+    version: 1,
+    savedAt: Date.now(),
+    rooms: persistedRooms,
+    games: persistedGames,
+    sessions: persistedSessions
+  };
+}
+
+function getUpstashHeaders(contentType?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`
+  };
+  if (contentType) {
+    headers["Content-Type"] = contentType;
+  }
+  return headers;
+}
+
+async function upstashGetValue(key: string): Promise<string | null> {
+  if (!redisPersistenceEnabled) return null;
+  const endpoint = `${UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(key)}`;
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: getUpstashHeaders()
+  });
+  if (!response.ok) {
+    throw new Error(`GET ${endpoint} failed with status ${response.status}`);
+  }
+  const payload = (await response.json()) as { result?: unknown; error?: string };
+  if (payload.error) {
+    throw new Error(`GET ${endpoint} returned error: ${payload.error}`);
+  }
+  if (typeof payload.result !== "string") return null;
+  return payload.result;
+}
+
+async function upstashSetValue(key: string, value: string): Promise<void> {
+  if (!redisPersistenceEnabled) return;
+  const endpoint = `${UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(key)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: getUpstashHeaders("text/plain; charset=utf-8"),
+    body: value
+  });
+  if (!response.ok) {
+    throw new Error(`SET ${endpoint} failed with status ${response.status}`);
+  }
+  const payload = (await response.json()) as { result?: unknown; error?: string };
+  if (payload.error) {
+    throw new Error(`SET ${endpoint} returned error: ${payload.error}`);
+  }
+}
+
+async function persistSnapshotNow() {
+  if (!redisPersistenceEnabled || isHydratingState) return;
+  const snapshot = getPersistedSnapshot();
+  await upstashSetValue(UPSTASH_STATE_KEY, JSON.stringify(snapshot));
+}
+
+function scheduleStatePersist() {
+  if (!redisPersistenceEnabled || isHydratingState) return;
+  if (persistScheduled) return;
+  persistScheduled = true;
+  setTimeout(() => {
+    persistScheduled = false;
+    persistQueue = persistQueue
+      .then(() => persistSnapshotNow())
+      .catch((error) => {
+        console.error("[persistence] Failed to persist state snapshot", error);
+      });
+  }, 0);
+}
+
 function getRoomSummary(room: RoomState): RoomSummary {
   return {
     id: room.id,
@@ -351,12 +538,14 @@ function getRoomSummary(room: RoomState): RoomSummary {
 function broadcastRoomList() {
   const summaries = Array.from(rooms.values()).map(getRoomSummary);
   io.emit("room:list", summaries);
+  scheduleStatePersist();
 }
 
 function emitRoomState(roomId: string) {
   const room = rooms.get(roomId);
   if (!room) return;
   io.to(roomId).emit("room:state", room);
+  scheduleStatePersist();
 }
 
 function emitGameState(roomId: string) {
@@ -395,6 +584,7 @@ function emitGameState(roomId: string) {
     if (!activeSocket) continue;
     activeSocket.emit("game:state", buildPublicState(player.id));
   }
+  scheduleStatePersist();
 }
 
 function clearEndTimer(game: GameStateInternal) {
@@ -753,6 +943,33 @@ function clearPendingFlip(game: GameStateInternal) {
   game.pendingFlip = null;
 }
 
+function handleFlipTimerElapsed(roomId: string, token: string, turnPlayerId: string) {
+  enqueue(roomId, () => {
+    const current = games.get(roomId);
+    if (!current) return;
+    if (current.status !== "in-game") return;
+    if (!current.flipTimer.enabled) return;
+    if (current.flipTimerToken !== token) return;
+    if (current.turnPlayerId !== turnPlayerId) return;
+    if (!beginPendingFlip(current, turnPlayerId)) return;
+    emitGameState(current.roomId);
+  });
+}
+
+function startFlipTimerCountdown(
+  game: GameStateInternal,
+  token: string,
+  turnPlayerId: string,
+  endsAt: number
+) {
+  game.flipTimerToken = token;
+  game.flipTimerEndsAt = endsAt;
+  const delayMs = Math.max(0, endsAt - Date.now());
+  game.flipTimerTimeout = setTimeout(() => {
+    handleFlipTimerElapsed(game.roomId, token, turnPlayerId);
+  }, delayMs);
+}
+
 function scheduleFlipTimer(game: GameStateInternal) {
   clearFlipTimer(game);
   if (!game.flipTimer.enabled) return;
@@ -762,22 +979,24 @@ function scheduleFlipTimer(game: GameStateInternal) {
 
   const token = randomUUID();
   const turnPlayerId = game.turnPlayerId;
-  const durationMs = game.flipTimer.seconds * 1000;
-  game.flipTimerToken = token;
-  game.flipTimerEndsAt = Date.now() + durationMs;
+  const endsAt = Date.now() + game.flipTimer.seconds * 1000;
+  startFlipTimerCountdown(game, token, turnPlayerId, endsAt);
+}
 
-  game.flipTimerTimeout = setTimeout(() => {
+function startPendingFlipRevealCountdown(
+  game: GameStateInternal,
+  pendingFlip: PendingFlipState & { token: string }
+) {
+  const delayMs = Math.max(0, pendingFlip.revealsAt - Date.now());
+  game.pendingFlipTimeout = setTimeout(() => {
     enqueue(game.roomId, () => {
       const current = games.get(game.roomId);
       if (!current) return;
-      if (current.status !== "in-game") return;
-      if (!current.flipTimer.enabled) return;
-      if (current.flipTimerToken !== token) return;
-      if (current.turnPlayerId !== turnPlayerId) return;
-      if (!beginPendingFlip(current, turnPlayerId)) return;
+      if (!current.pendingFlip || current.pendingFlip.token !== pendingFlip.token) return;
+      if (!revealPendingFlip(current, pendingFlip.token)) return;
       emitGameState(current.roomId);
     });
-  }, durationMs);
+  }, delayMs);
 }
 
 function emitErrorToPlayer(playerId: string, message: string) {
@@ -815,10 +1034,10 @@ function clearAllClaimCooldowns(game: GameStateInternal) {
   Object.keys(game.claimCooldowns).forEach((playerId) => clearClaimCooldown(game, playerId));
 }
 
-function startClaimCooldown(game: GameStateInternal, playerId: string) {
+function startClaimCooldownAt(game: GameStateInternal, playerId: string, endsAt: number) {
   clearClaimCooldown(game, playerId);
-  const endsAt = Date.now() + CLAIM_COOLDOWN_MS;
   game.claimCooldowns[playerId] = endsAt;
+  const delayMs = Math.max(0, endsAt - Date.now());
   const timeout = setTimeout(() => {
     enqueue(game.roomId, () => {
       const current = games.get(game.roomId);
@@ -827,8 +1046,12 @@ function startClaimCooldown(game: GameStateInternal, playerId: string) {
       clearClaimCooldown(current, playerId);
       emitGameState(current.roomId);
     });
-  }, CLAIM_COOLDOWN_MS);
+  }, delayMs);
   game.claimCooldownTimeouts.set(playerId, timeout);
+}
+
+function startClaimCooldown(game: GameStateInternal, playerId: string) {
+  startClaimCooldownAt(game, playerId, Date.now() + CLAIM_COOLDOWN_MS);
 }
 
 function isClaimCooldownActive(game: GameStateInternal, playerId: string): boolean {
@@ -841,45 +1064,67 @@ function isClaimCooldownActive(game: GameStateInternal, playerId: string): boole
   return true;
 }
 
-function openClaimWindow(game: GameStateInternal, playerId: string) {
-  clearClaimWindow(game);
-  const token = randomUUID();
-  const durationMs = game.claimTimer.seconds * 1000;
-  const endsAt = Date.now() + durationMs;
-  game.claimWindow = { playerId, endsAt, token };
+function scheduleClaimWindowTimeout(
+  game: GameStateInternal,
+  claimWindow: { playerId: string; endsAt: number; token: string }
+) {
+  const delayMs = Math.max(0, claimWindow.endsAt - Date.now());
   game.claimWindowTimeout = setTimeout(() => {
     enqueue(game.roomId, () => {
       const current = games.get(game.roomId);
       if (!current) return;
-      if (!current.claimWindow || current.claimWindow.token !== token) return;
+      if (!current.claimWindow || current.claimWindow.token !== claimWindow.token) return;
       const claimantId = current.claimWindow.playerId;
       clearClaimWindow(current);
       startClaimCooldown(current, claimantId);
       emitErrorToPlayer(claimantId, "Claim window expired.");
       emitGameState(current.roomId);
     });
-  }, durationMs);
+  }, delayMs);
 }
 
-function scheduleEndTimer(game: GameStateInternal) {
+function openClaimWindow(game: GameStateInternal, playerId: string) {
+  clearClaimWindow(game);
+  const token = randomUUID();
+  const durationMs = game.claimTimer.seconds * 1000;
+  const endsAt = Date.now() + durationMs;
+  game.claimWindow = { playerId, endsAt, token };
+  scheduleClaimWindowTimeout(game, game.claimWindow);
+}
+
+function finalizeEndedGame(roomId: string) {
+  const game = games.get(roomId);
+  if (!game) return;
+  clearEndTimer(game);
+  clearClaimWindow(game);
+  clearAllClaimCooldowns(game);
+  clearPendingFlip(game);
+  clearFlipTimer(game);
+  game.status = "ended";
+  const room = rooms.get(roomId);
+  if (room) {
+    room.status = "ended";
+    emitRoomState(room.id);
+    broadcastRoomList();
+  }
+  emitGameState(roomId);
+}
+
+function scheduleEndTimerAt(game: GameStateInternal, endsAt: number) {
   if (game.endTimer) {
     clearTimeout(game.endTimer);
   }
   clearFlipTimer(game);
   clearPendingFlip(game);
-  game.endTimerEndsAt = Date.now() + END_TIMER_MS;
+  game.endTimerEndsAt = endsAt;
+  const delayMs = Math.max(0, endsAt - Date.now());
   game.endTimer = setTimeout(() => {
-    clearClaimWindow(game);
-    clearAllClaimCooldowns(game);
-    game.status = "ended";
-    const room = rooms.get(game.roomId);
-    if (room) {
-      room.status = "ended";
-      emitRoomState(room.id);
-      broadcastRoomList();
-    }
-    emitGameState(game.roomId);
-  }, END_TIMER_MS);
+    finalizeEndedGame(game.roomId);
+  }, delayMs);
+}
+
+function scheduleEndTimer(game: GameStateInternal) {
+  scheduleEndTimerAt(game, Date.now() + END_TIMER_MS);
 }
 
 function beginPendingFlip(game: GameStateInternal, playerId: string): boolean {
@@ -898,15 +1143,7 @@ function beginPendingFlip(game: GameStateInternal, playerId: string): boolean {
     revealsAt
   };
 
-  game.pendingFlipTimeout = setTimeout(() => {
-    enqueue(game.roomId, () => {
-      const current = games.get(game.roomId);
-      if (!current) return;
-      if (!current.pendingFlip || current.pendingFlip.token !== token) return;
-      if (!revealPendingFlip(current, token)) return;
-      emitGameState(current.roomId);
-    });
-  }, FLIP_REVEAL_MS);
+  startPendingFlipRevealCountdown(game, game.pendingFlip);
 
   return true;
 }
@@ -989,6 +1226,7 @@ function cleanupRoom(roomId: string) {
   rooms.delete(roomId);
   roomQueues.delete(roomId);
   broadcastRoomList();
+  scheduleStatePersist();
 }
 
 function removePlayerFromGame(game: GameStateInternal, playerId: string) {
@@ -1118,6 +1356,182 @@ function handlePlayerDisconnect(roomId: string, playerId: string) {
 
   emitRoomState(roomId);
   broadcastRoomList();
+}
+
+function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal {
+  return {
+    roomId: persistedGame.roomId,
+    status: persistedGame.status,
+    bag: clone(persistedGame.bag),
+    centerTiles: clone(persistedGame.centerTiles),
+    players: clone(persistedGame.players).map((player) => ({
+      ...player,
+      connected: false,
+      preStealEntries: player.preStealEntries ?? []
+    })),
+    turnOrder: [...persistedGame.turnOrder],
+    turnIndex: persistedGame.turnIndex,
+    turnPlayerId: persistedGame.turnPlayerId,
+    lastClaimAt: persistedGame.lastClaimAt,
+    endTimerEndsAt: persistedGame.endTimerEndsAt,
+    flipTimer: { ...persistedGame.flipTimer },
+    flipTimerEndsAt: persistedGame.flipTimerEndsAt,
+    flipTimerToken: persistedGame.flipTimerToken,
+    pendingFlip: persistedGame.pendingFlip ? { ...persistedGame.pendingFlip } : null,
+    claimTimer: { ...persistedGame.claimTimer },
+    claimWindow: persistedGame.claimWindow ? { ...persistedGame.claimWindow } : null,
+    claimCooldowns: { ...persistedGame.claimCooldowns },
+    claimCooldownTimeouts: new Map(),
+    preStealEnabled: persistedGame.preStealEnabled,
+    preStealPrecedenceOrder: [...persistedGame.preStealPrecedenceOrder],
+    lastClaimEvent: persistedGame.lastClaimEvent ? { ...persistedGame.lastClaimEvent } : null
+  };
+}
+
+function restoreGameTimers(game: GameStateInternal) {
+  if (game.status === "ended") {
+    clearGameTimers(game);
+    return;
+  }
+
+  const now = Date.now();
+
+  if (game.pendingFlip) {
+    if (game.pendingFlip.revealsAt <= now) {
+      const token = game.pendingFlip.token;
+      revealPendingFlip(game, token);
+    } else {
+      startPendingFlipRevealCountdown(game, game.pendingFlip);
+    }
+  }
+
+  if (game.claimWindow) {
+    if (game.claimWindow.endsAt <= now) {
+      const claimantId = game.claimWindow.playerId;
+      clearClaimWindow(game);
+      startClaimCooldown(game, claimantId);
+    } else {
+      scheduleClaimWindowTimeout(game, game.claimWindow);
+    }
+  }
+
+  for (const [playerId, endsAt] of Object.entries({ ...game.claimCooldowns })) {
+    if (endsAt <= now) {
+      clearClaimCooldown(game, playerId);
+      continue;
+    }
+    startClaimCooldownAt(game, playerId, endsAt);
+  }
+
+  if (typeof game.endTimerEndsAt === "number") {
+    if (game.endTimerEndsAt <= now) {
+      finalizeEndedGame(game.roomId);
+      return;
+    }
+    scheduleEndTimerAt(game, game.endTimerEndsAt);
+    return;
+  }
+
+  if (!game.flipTimer.enabled || game.pendingFlip || game.bag.length === 0) {
+    return;
+  }
+
+  if (
+    game.flipTimerToken &&
+    typeof game.flipTimerEndsAt === "number" &&
+    game.flipTimerEndsAt > now
+  ) {
+    startFlipTimerCountdown(game, game.flipTimerToken, game.turnPlayerId, game.flipTimerEndsAt);
+    return;
+  }
+
+  if (
+    game.flipTimerToken &&
+    typeof game.flipTimerEndsAt === "number" &&
+    game.flipTimerEndsAt <= now
+  ) {
+    handleFlipTimerElapsed(game.roomId, game.flipTimerToken, game.turnPlayerId);
+    return;
+  }
+
+  scheduleFlipTimer(game);
+}
+
+async function hydrateStateFromRedis() {
+  if (!redisPersistenceEnabled) {
+    console.log("[persistence] Redis persistence disabled");
+    return;
+  }
+
+  try {
+    const snapshotRaw = await upstashGetValue(UPSTASH_STATE_KEY);
+    if (!snapshotRaw) {
+      console.log("[persistence] No snapshot found");
+      return;
+    }
+    const parsed = JSON.parse(snapshotRaw) as unknown;
+    if (!isPersistedSnapshotV1(parsed)) {
+      console.warn("[persistence] Snapshot format is invalid, skipping hydration");
+      return;
+    }
+
+    isHydratingState = true;
+    rooms.clear();
+    games.clear();
+    roomQueues.clear();
+    sessionsById.clear();
+    sessionsByPlayerId.clear();
+    socketToSessionId.clear();
+
+    for (const persistedRoom of parsed.rooms) {
+      const room = clone(persistedRoom);
+      room.players = room.players.map((player) => ({
+        ...player,
+        connected: false,
+        preStealEntries: player.preStealEntries ?? []
+      }));
+      rooms.set(room.id, room);
+    }
+
+    for (const persistedSession of parsed.sessions) {
+      const session: SessionRecord = {
+        sessionId: persistedSession.sessionId,
+        playerId: persistedSession.playerId,
+        name: persistedSession.name,
+        roomId: persistedSession.roomId,
+        socketId: null
+      };
+      if (session.roomId && !rooms.has(session.roomId)) {
+        session.roomId = null;
+      }
+      sessionsById.set(session.sessionId, session);
+      sessionsByPlayerId.set(session.playerId, session);
+    }
+
+    for (const persistedGame of parsed.games) {
+      if (!rooms.has(persistedGame.roomId)) continue;
+      const game = hydrateGameState(persistedGame);
+      games.set(game.roomId, game);
+    }
+
+    for (const game of games.values()) {
+      const room = rooms.get(game.roomId);
+      if (!room) continue;
+      if (room.status !== game.status) {
+        room.status = game.status;
+      }
+      restoreGameTimers(game);
+    }
+
+    console.log(
+      `[persistence] Hydrated ${rooms.size} rooms, ${games.size} games, ${sessionsById.size} sessions`
+    );
+  } catch (error) {
+    console.error("[persistence] Failed to hydrate state from Redis", error);
+  } finally {
+    isHydratingState = false;
+    scheduleStatePersist();
+  }
 }
 
 io.on("connection", (socket) => {
@@ -2026,9 +2440,12 @@ io.on("connection", (socket) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
-  httpServer.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-  });
+  void (async () => {
+    await hydrateStateFromRedis();
+    httpServer.listen(PORT, () => {
+      console.log(`Server listening on port ${PORT}`);
+    });
+  })();
 }
 
 export {
