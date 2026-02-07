@@ -832,21 +832,30 @@ export default function App() {
     if (!gameState || !selfPlayerId) return [];
     return gameState.players.find((player) => player.id === selfPlayerId)?.preStealEntries ?? [];
   }, [gameState, selfPlayerId]);
-  const preStealPrecedencePlayers = useMemo(() => {
+  const orderedGamePlayers = useMemo(() => {
     if (!gameState) return [];
-    return gameState.preStealPrecedenceOrder
-      .map((playerId) => gameState.players.find((player) => player.id === playerId))
+
+    const playersById = new Map(gameState.players.map((player) => [player.id, player]));
+    const precedenceOrderedPlayers = gameState.preStealPrecedenceOrder
+      .map((playerId) => playersById.get(playerId))
       .filter((player): player is Player => Boolean(player));
+
+    if (precedenceOrderedPlayers.length === 0) {
+      return gameState.players;
+    }
+
+    const includedIds = new Set(precedenceOrderedPlayers.map((player) => player.id));
+    const remainingPlayers = gameState.players.filter((player) => !includedIds.has(player.id));
+    return [...precedenceOrderedPlayers, ...remainingPlayers];
   }, [gameState]);
   const spectatorPreStealPlayers = useMemo(() => {
-    if (!gameState) return [];
-    return gameState.players.map((player) => ({
+    return orderedGamePlayers.map((player) => ({
       id: player.id,
       name: player.name,
       connected: player.connected,
       preStealEntries: player.preStealEntries
     }));
-  }, [gameState]);
+  }, [orderedGamePlayers]);
 
   const openLobbyRooms = useMemo(() => roomList.filter((room) => room.status === "lobby"), [roomList]);
   const inProgressLobbyRooms = useMemo(
@@ -2567,7 +2576,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="words">
+            <div className="words board-words">
               {activeReplayState.players.map((player) => (
                 <ReplayWordList key={player.id} player={player} />
               ))}
@@ -3339,141 +3348,17 @@ export default function App() {
               </div>
             </div>
 
-            {gameState.preStealEnabled && (
-              <div className="pre-steal-panel">
-                {isSpectator ? (
-                  <div className="pre-steal-layout">
-                    <div className="pre-steal-entries-column">
-                      <div className="word-header">
-                        <span>Pre-steal entries</span>
-                      </div>
-                      {spectatorPreStealPlayers.every((player) => player.preStealEntries.length === 0) && (
-                        <div className="muted">No pre-steal entries.</div>
-                      )}
-                      {spectatorPreStealPlayers.map((player) => (
-                        <div key={player.id} className="word-list">
-                          <div className="word-header">
-                            <span>{player.name}</span>
-                            {!player.connected && <span className="badge">offline</span>}
-                          </div>
-                          {player.preStealEntries.length === 0 && (
-                            <div className="muted">No entries.</div>
-                          )}
-                          {player.preStealEntries.map((entry) => (
-                            <div key={entry.id} className="pre-steal-entry">
-                              <span className="pre-steal-entry-text">
-                                {entry.triggerLetters}
-                                {" -> "}
-                                {entry.claimWord}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="pre-steal-precedence-column">
-                      <div className="word-header">
-                        <span>Precendence</span>
-                      </div>
-                      {preStealPrecedencePlayers.length === 0 && (
-                        <div className="muted">No precedence order available.</div>
-                      )}
-                      {preStealPrecedencePlayers.length > 0 && (
-                        <ol className="pre-steal-precedence-list">
-                          {preStealPrecedencePlayers.map((player) => (
-                            <li key={player.id}>
-                              <span>{player.name}</span>
-                              {!player.connected && <span className="badge">offline</span>}
-                            </li>
-                          ))}
-                        </ol>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="pre-steal-layout">
-                    <div className="pre-steal-entries-column">
-                      <div className="word-header">
-                        <span>Your pre-steal entries</span>
-                      </div>
-                      <div className="pre-steal-entry-form">
-                        <input
-                          value={preStealTriggerInput}
-                          onChange={(event) => setPreStealTriggerInput(event.target.value)}
-                          placeholder="Trigger letters"
-                        />
-                        <input
-                          value={preStealClaimWordInput}
-                          onChange={(event) => setPreStealClaimWordInput(event.target.value)}
-                          placeholder="Claim word"
-                        />
-                        <button
-                          className="button-secondary"
-                          onClick={handleAddPreStealEntry}
-                          disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
-                        >
-                          Add
-                        </button>
-                      </div>
-
-                      {myPreStealEntries.length === 0 && (
-                        <div className="muted">No pre-steal entries.</div>
-                      )}
-                      {myPreStealEntries.map((entry) => (
-                        <div
-                          key={entry.id}
-                          className="pre-steal-entry self"
-                          draggable
-                          onDragStart={(event) => {
-                            setPreStealDraggedEntryId(entry.id);
-                            event.dataTransfer.setData("text/plain", entry.id);
-                          }}
-                          onDragEnd={() => setPreStealDraggedEntryId(null)}
-                          onDragOver={(event) => {
-                            if (!preStealDraggedEntryId) return;
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = "move";
-                          }}
-                          onDrop={(event) => {
-                            event.preventDefault();
-                            handlePreStealEntryDrop(entry.id);
-                          }}
-                        >
-                          <span className="pre-steal-entry-text">
-                            {entry.triggerLetters}
-                            {" -> "}
-                            {entry.claimWord}
-                          </span>
-                          <button className="button-secondary" onClick={() => handleRemovePreStealEntry(entry.id)}>
-                            Remove
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="pre-steal-precedence-column">
-                      <div className="word-header">
-                        <span>Precendence</span>
-                      </div>
-                      {preStealPrecedencePlayers.length === 0 && (
-                        <div className="muted">No precedence order available.</div>
-                      )}
-                      {preStealPrecedencePlayers.length > 0 && (
-                        <ol className="pre-steal-precedence-list">
-                          {preStealPrecedencePlayers.map((player) => (
-                            <li key={player.id}>
-                              <span>{player.name}</span>
-                              {!player.connected && <span className="badge">offline</span>}
-                            </li>
-                          ))}
-                        </ol>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="words board-words">
+              {orderedGamePlayers.map((player) => (
+                <WordList
+                  key={player.id}
+                  player={player}
+                  isSelf={player.id === selfPlayerId}
+                  highlightedWordIds={claimedWordHighlights}
+                  onTileLetterSelect={handleClaimTileSelect}
+                />
+              ))}
+            </div>
           </section>
 
           <section className="panel scoreboard">
@@ -3484,7 +3369,7 @@ export default function App() {
               </button>
             </div>
             <div className="player-list">
-              {gameState.players.map((player) => (
+              {orderedGamePlayers.map((player) => (
                 <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
                   <div>
                     <strong>{player.name}</strong>
@@ -3496,16 +3381,99 @@ export default function App() {
               ))}
             </div>
 
-            <div className="words">
-              {gameState.players.map((player) => (
-                <WordList
-                  key={player.id}
-                  player={player}
-                  highlightedWordIds={claimedWordHighlights}
-                  onTileLetterSelect={handleClaimTileSelect}
-                />
-              ))}
-            </div>
+            {gameState.preStealEnabled && (
+              <div className="pre-steal-panel">
+                {isSpectator ? (
+                  <div className="pre-steal-entries-column">
+                    <div className="word-header">
+                      <span>Pre-steal entries</span>
+                    </div>
+                    {spectatorPreStealPlayers.every((player) => player.preStealEntries.length === 0) && (
+                      <div className="muted">No pre-steal entries.</div>
+                    )}
+                    {spectatorPreStealPlayers.map((player) => (
+                      <div key={player.id} className="word-list">
+                        <div className="word-header">
+                          <span>{player.name}</span>
+                          {!player.connected && <span className="badge">offline</span>}
+                        </div>
+                        {player.preStealEntries.length === 0 && (
+                          <div className="muted">No entries.</div>
+                        )}
+                        {player.preStealEntries.map((entry) => (
+                          <div key={entry.id} className="pre-steal-entry">
+                            <span className="pre-steal-entry-text">
+                              {entry.triggerLetters}
+                              {" -> "}
+                              {entry.claimWord}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="pre-steal-entries-column">
+                    <div className="word-header">
+                      <span>Your pre-steal entries</span>
+                    </div>
+                    <div className="pre-steal-entry-form">
+                      <input
+                        value={preStealTriggerInput}
+                        onChange={(event) => setPreStealTriggerInput(event.target.value)}
+                        placeholder="Trigger letters"
+                      />
+                      <input
+                        value={preStealClaimWordInput}
+                        onChange={(event) => setPreStealClaimWordInput(event.target.value)}
+                        placeholder="Claim word"
+                      />
+                      <button
+                        className="button-secondary"
+                        onClick={handleAddPreStealEntry}
+                        disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
+                      >
+                        Add
+                      </button>
+                    </div>
+
+                    {myPreStealEntries.length === 0 && (
+                      <div className="muted">No pre-steal entries.</div>
+                    )}
+                    {myPreStealEntries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="pre-steal-entry self"
+                        draggable
+                        onDragStart={(event) => {
+                          setPreStealDraggedEntryId(entry.id);
+                          event.dataTransfer.setData("text/plain", entry.id);
+                        }}
+                        onDragEnd={() => setPreStealDraggedEntryId(null)}
+                        onDragOver={(event) => {
+                          if (!preStealDraggedEntryId) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          handlePreStealEntryDrop(entry.id);
+                        }}
+                      >
+                        <span className="pre-steal-entry-text">
+                          {entry.triggerLetters}
+                          {" -> "}
+                          {entry.claimWord}
+                        </span>
+                        <button className="button-secondary" onClick={() => handleRemovePreStealEntry(entry.id)}>
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -3734,57 +3702,63 @@ export default function App() {
 
 function WordList({
   player,
+  isSelf,
   highlightedWordIds,
   onTileLetterSelect
 }: {
   player: Player;
+  isSelf: boolean;
   highlightedWordIds: Record<string, WordHighlightKind>;
   onTileLetterSelect: (letter: string) => void;
 }) {
   const { isTileInputMethodEnabled } = useUserSettings();
 
   return (
-    <div className="word-list">
+    <div className={isSelf ? "word-list word-list-self" : "word-list"}>
       <div className="word-header">
         <span>{player.name}'s words</span>
         <span className="muted">{player.words.length}</span>
       </div>
       {player.words.length === 0 && <div className="muted">No words yet.</div>}
-      {player.words.map((word) => (
-        <div key={word.id} className={getWordItemClassName(highlightedWordIds[word.id])}>
-          <div className="word-tiles" aria-label={word.text}>
-            {word.text.split("").map((letter, index) => (
-              <div
-                key={`${word.id}-${index}`}
-                className={isTileInputMethodEnabled ? "tile word-tile tile-selectable" : "tile word-tile"}
-                role={isTileInputMethodEnabled ? "button" : undefined}
-                tabIndex={isTileInputMethodEnabled ? 0 : undefined}
-                onClick={
-                  isTileInputMethodEnabled ? () => onTileLetterSelect(letter.toUpperCase()) : undefined
-                }
-                onKeyDown={
-                  isTileInputMethodEnabled
-                    ? (event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onTileLetterSelect(letter.toUpperCase());
-                        }
-                      }
-                    : undefined
-                }
-                aria-label={
-                  isTileInputMethodEnabled
-                    ? `Use letter ${letter.toUpperCase()} from ${player.name}'s word`
-                    : undefined
-                }
-              >
-                {letter.toUpperCase()}
+      {player.words.length > 0 && (
+        <div className="word-list-words">
+          {player.words.map((word) => (
+            <div key={word.id} className={getWordItemClassName(highlightedWordIds[word.id])}>
+              <div className="word-tiles" aria-label={word.text}>
+                {word.text.split("").map((letter, index) => (
+                  <div
+                    key={`${word.id}-${index}`}
+                    className={isTileInputMethodEnabled ? "tile word-tile tile-selectable" : "tile word-tile"}
+                    role={isTileInputMethodEnabled ? "button" : undefined}
+                    tabIndex={isTileInputMethodEnabled ? 0 : undefined}
+                    onClick={
+                      isTileInputMethodEnabled ? () => onTileLetterSelect(letter.toUpperCase()) : undefined
+                    }
+                    onKeyDown={
+                      isTileInputMethodEnabled
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onTileLetterSelect(letter.toUpperCase());
+                            }
+                          }
+                        : undefined
+                    }
+                    aria-label={
+                      isTileInputMethodEnabled
+                        ? `Use letter ${letter.toUpperCase()} from ${player.name}'s word`
+                        : undefined
+                    }
+                  >
+                    {letter.toUpperCase()}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   );
 }

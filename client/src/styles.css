@@ -119,6 +119,7 @@
   /* Submitted practice option */
   --color-submitted-bg: rgba(74, 144, 217, 0.1);
   --color-submitted-border: rgba(74, 144, 217, 0.55);
+  --color-wordle-green: #6aaa64;
 }
 
 /* ─── Dark mode ─────────────────────────────────────────────── */
@@ -224,6 +225,7 @@
 
   --color-submitted-bg: rgba(106, 173, 232, 0.12);
   --color-submitted-border: rgba(106, 173, 232, 0.55);
+  --color-wordle-green: #6aaa64;
 }
 
 /* ─── Reset & base ──────────────────────────────────────────── */
@@ -1063,11 +1065,17 @@ button:disabled {
   overflow-x: hidden;
 }
 
+.board-words {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+}
+
 /* ─── Pre-steal ─────────────────────────────────────────────── */
 .pre-steal-panel {
-  padding: 0.75rem;
-  border-radius: 8px;
-  background: var(--color-inset);
+  margin-top: 0.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border-light);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -1108,7 +1116,7 @@ button:disabled {
 
 .pre-steal-entry-form {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: 0.8fr 1.2fr auto;
   gap: 0.5rem;
 }
 
@@ -1117,10 +1125,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  border-radius: 8px;
-  padding: 0.4rem 0.45rem;
-  background: var(--color-inset);
-  border: 1px solid var(--color-inset-border);
+  padding: 0.25rem 0;
 }
 
 .pre-steal-entry.self {
@@ -1141,6 +1146,12 @@ button:disabled {
   word-break: break-word;
 }
 
+.pre-steal-panel .word-list {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 /* ─── Word list ─────────────────────────────────────────────── */
 .word-list {
   padding: 0.75rem;
@@ -1149,6 +1160,19 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.board-words .word-list {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.word-list-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: flex-start;
 }
 
 .word-header {
@@ -1162,6 +1186,15 @@ button:disabled {
   display: flex;
   align-items: center;
   padding: 0.25rem 0;
+}
+
+.word-list-words .word-item {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-inset-border);
+  padding: 0.25rem;
 }
 
 .word-item.word-item-claim {
@@ -1224,12 +1257,30 @@ button:disabled {
   gap: 0.35rem;
 }
 
+.word-list-words .word-tiles {
+  flex-wrap: nowrap;
+  gap: 0.2rem;
+}
+
 .word-tile {
   width: 34px;
   height: 34px;
   font-size: 1rem;
   border-radius: 6px;
   box-shadow: 0 1px 3px var(--color-tile-shadow);
+}
+
+.word-list-words .word-tile {
+  width: 26px;
+  height: 26px;
+  font-size: 0.85rem;
+  border-radius: 5px;
+}
+
+.word-list-self .word-list-words .word-tile {
+  border-color: var(--color-wordle-green);
+  background: var(--color-wordle-green);
+  color: #ffffff;
 }
 
 .word-item.word-item-claim .word-tile {
