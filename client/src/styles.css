@@ -389,6 +389,15 @@ h1, h2, h3 {
   gap: 1.5rem;
 }
 
+.lobby-grid {
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
+}
+
+.lobby-grid .panel {
+  min-height: 20rem;
+  padding: 1.85rem;
+}
+
 /* ─── Panel ─────────────────────────────────────────────────── */
 .panel {
   padding: 1.5rem;
@@ -1495,6 +1504,10 @@ button:disabled {
 
 /* ─── Responsive ────────────────────────────────────────────── */
 @media (max-width: 960px) {
+  .lobby-grid {
+    grid-template-columns: 1fr;
+  }
+
   .page.has-game-log {
     padding-bottom: 9.5rem;
   }

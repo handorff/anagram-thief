@@ -2730,7 +2730,7 @@ export default function App() {
         </header>
 
       {!roomState && !practiceState.active && !isReplayMode && lobbyView === "list" && (
-        <div className="grid">
+        <div className="grid lobby-grid">
           <section className="panel">
             <h2>Open Games</h2>
             <div className="room-list">
@@ -2752,6 +2752,12 @@ export default function App() {
                 );
               })}
             </div>
+            <div className="button-row">
+              <button onClick={() => setLobbyView("create")}>Create new game</button>
+            </div>
+          </section>
+
+          <section className="panel">
             <h2>Games in Progress</h2>
             <div className="room-list">
               {inProgressLobbyRooms.length === 0 && <p className="muted">No games in progress.</p>}
@@ -2768,9 +2774,6 @@ export default function App() {
                   </button>
                 </div>
               ))}
-            </div>
-            <div className="button-row">
-              <button onClick={() => setLobbyView("create")}>Create new game</button>
             </div>
           </section>
 
@@ -2790,6 +2793,13 @@ export default function App() {
               <button className="button-secondary" onClick={handleOpenPracticeEditor}>
                 Create custom puzzle
               </button>
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>Replays</h2>
+            <p className="muted">Import a replay file to review a completed game step-by-step.</p>
+            <div className="button-row">
               <button className="button-secondary" onClick={handleOpenReplayImport}>
                 Import replay
               </button>
