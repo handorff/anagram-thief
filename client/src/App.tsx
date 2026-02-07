@@ -537,6 +537,25 @@ function buildReplayActionText(
   return "Replay action.";
 }
 
+function buildPracticeSharePayloadFromReplayState(state: ReplayStateSnapshot): PracticeSharePayload {
+  const centerLetters = state.centerTiles
+    .map((tile) => normalizeEditorText(tile.letter))
+    .filter((letter) => letter.length === 1 && LETTER_PATTERN.test(letter))
+    .join("");
+  const existingWords = state.players.flatMap((player) =>
+    player.words
+      .map((word) => normalizeEditorText(word.text))
+      .filter((word) => word.length > 0 && LETTER_PATTERN.test(word))
+  );
+
+  return {
+    v: 2,
+    d: DEFAULT_PRACTICE_DIFFICULTY,
+    c: centerLetters,
+    w: existingWords
+  };
+}
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [selfPlayerId, setSelfPlayerId] = useState<string | null>(null);
@@ -547,6 +566,7 @@ export default function App() {
   const [replayStepIndex, setReplayStepIndex] = useState(0);
   const [replaySource, setReplaySource] = useState<ReplaySource | null>(null);
   const [importReplayError, setImportReplayError] = useState<string | null>(null);
+  const [replayPuzzleError, setReplayPuzzleError] = useState<string | null>(null);
   const [isReplayAnalysisOpen, setIsReplayAnalysisOpen] = useState(false);
   const [replayAnalysisByStepIndex, setReplayAnalysisByStepIndex] = useState<
     Record<number, ReplayAnalysisResult>
@@ -1478,6 +1498,7 @@ export default function App() {
     setReplayStepIndex(0);
     setReplaySource(null);
     setImportReplayError(null);
+    setReplayPuzzleError(null);
     setIsReplayAnalysisOpen(false);
     setReplayAnalysisByStepIndex({});
     setImportedReplayAnalysisByStepIndex({});
@@ -1519,6 +1540,7 @@ export default function App() {
         file: parsed.file
       });
       setImportReplayError(null);
+      setReplayPuzzleError(null);
       setIsReplayMode(true);
       setReplayStepIndex(0);
       setIsReplayAnalysisOpen(false);
@@ -1553,10 +1575,67 @@ export default function App() {
     URL.revokeObjectURL(downloadUrl);
   }, [roomReplay, roomState?.id, roomState?.status, replayAnalysisByStepIndex]);
 
+  const handleViewReplayAsPuzzle = useCallback(async () => {
+    if (!activeReplayState) return;
+
+    const sharedPuzzle = buildPracticeSharePayloadFromReplayState(activeReplayState);
+    setReplayPuzzleError(null);
+
+    const validationResponse = await new Promise<PracticeValidateCustomResponse>((resolve) => {
+      let isSettled = false;
+      const timeoutId = window.setTimeout(() => {
+        if (isSettled) return;
+        isSettled = true;
+        resolve({
+          ok: false,
+          message: "Validation timed out. Please try again."
+        });
+      }, CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS);
+
+      socket.emit(
+        "practice:validate-custom",
+        { sharedPuzzle },
+        (response: PracticeValidateCustomResponse) => {
+          if (isSettled) return;
+          isSettled = true;
+          window.clearTimeout(timeoutId);
+          if (!response || typeof response.ok !== "boolean") {
+            resolve({
+              ok: false,
+              message: "Custom puzzle is invalid or has no valid plays."
+            });
+            return;
+          }
+          resolve(response);
+        }
+      );
+    });
+
+    if (!validationResponse.ok) {
+      setReplayPuzzleError(validationResponse.message ?? "Custom puzzle is invalid or has no valid plays.");
+      return;
+    }
+
+    setPendingSharedLaunch({
+      kind: "puzzle",
+      payload: sharedPuzzle
+    });
+    setReplayPuzzleError(null);
+    setIsReplayMode(false);
+    setReplaySource(null);
+    setIsReplayAnalysisOpen(false);
+    setReplayAnalysisError(null);
+    setReplayAnalysisLoadingStepIndex(null);
+    if (roomState) {
+      handleLeaveRoom();
+    }
+  }, [activeReplayState, roomState, handleLeaveRoom]);
+
   const handleExitReplayView = useCallback(() => {
     setIsReplayMode(false);
     setReplayStepIndex(0);
     setReplaySource(null);
+    setReplayPuzzleError(null);
     setIsReplayAnalysisOpen(false);
     setImportedReplayAnalysisByStepIndex({});
     setReplayAnalysisLoadingStepIndex(null);
@@ -1646,6 +1725,7 @@ export default function App() {
       replay: roomReplay
     });
     setImportReplayError(null);
+    setReplayPuzzleError(null);
     setReplayStepIndex(0);
     setIsReplayAnalysisOpen(false);
     setReplayAnalysisError(null);
@@ -2044,6 +2124,7 @@ export default function App() {
 
   useEffect(() => {
     setReplayAnalysisError(null);
+    setReplayPuzzleError(null);
   }, [activeReplayRequestedStepIndex]);
 
   useEffect(() => {
@@ -2374,12 +2455,20 @@ export default function App() {
           <button className="button-secondary" onClick={handleOpenReplayImport}>
             Import replay
           </button>
+          <button className="button-secondary" onClick={handleViewReplayAsPuzzle}>
+            View as Puzzle
+          </button>
           {canExportReplay && (
             <button className="button-secondary" onClick={handleExportReplay}>
               Export replay (.json)
             </button>
           )}
         </div>
+        {replayPuzzleError && (
+          <div className="replay-import-error" role="alert">
+            {replayPuzzleError}
+          </div>
+        )}
         {importReplayError && (
           <div className="replay-import-error" role="alert">
             {importReplayError}
