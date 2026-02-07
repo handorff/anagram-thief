@@ -1041,20 +1041,29 @@ export default function App() {
   const replayTurnPlayerName = activeReplayState
     ? getPlayerName(activeReplayState.players, activeReplayState.turnPlayerId)
     : "Unknown";
-  const replayPreStealPlayers = useMemo(() => {
+  const orderedReplayPlayers = useMemo(() => {
     if (!activeReplayState) return [];
-    return activeReplayState.players.map((player) => ({
+
+    const playersById = new Map(activeReplayState.players.map((player) => [player.id, player]));
+    const precedenceOrderedPlayers = activeReplayState.preStealPrecedenceOrder
+      .map((playerId) => playersById.get(playerId))
+      .filter((player): player is ReplayPlayerSnapshot => Boolean(player));
+
+    if (precedenceOrderedPlayers.length === 0) {
+      return activeReplayState.players;
+    }
+
+    const includedIds = new Set(precedenceOrderedPlayers.map((player) => player.id));
+    const remainingPlayers = activeReplayState.players.filter((player) => !includedIds.has(player.id));
+    return [...precedenceOrderedPlayers, ...remainingPlayers];
+  }, [activeReplayState]);
+  const replayPreStealPlayers = useMemo(() => {
+    return orderedReplayPlayers.map((player) => ({
       id: player.id,
       name: player.name,
       preStealEntries: player.preStealEntries
     }));
-  }, [activeReplayState]);
-  const replayPreStealPrecedencePlayers = useMemo(() => {
-    if (!activeReplayState) return [];
-    return activeReplayState.preStealPrecedenceOrder
-      .map((playerId) => activeReplayState.players.find((player) => player.id === playerId))
-      .filter((player): player is ReplayPlayerSnapshot => Boolean(player));
-  }, [activeReplayState]);
+  }, [orderedReplayPlayers]);
   const gameOverStandings = useMemo(() => {
     if (!gameState) {
       return { players: [] as Player[], winningScore: null as number | null };
@@ -2517,56 +2526,16 @@ export default function App() {
                 </div>
               ))}
             </div>
-
-            {activeReplayState.preStealEnabled && (
-              <div className="pre-steal-panel replay-pre-steal-panel">
-                <div className="pre-steal-layout">
-                  <div className="pre-steal-entries-column">
-                    <div className="word-header">
-                      <span>Pre-steal entries</span>
-                    </div>
-                    {replayPreStealPlayers.map((player) => (
-                      <div key={player.id} className="word-list">
-                        <div className="word-header">
-                          <span>{player.name}</span>
-                        </div>
-                        {player.preStealEntries.map((entry) => (
-                          <div key={entry.id} className="pre-steal-entry">
-                            <span className="pre-steal-entry-text">
-                              {entry.triggerLetters}
-                              {" -> "}
-                              {entry.claimWord}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="pre-steal-precedence-column">
-                    <div className="word-header">
-                      <span>Precendence</span>
-                    </div>
-                    {replayPreStealPrecedencePlayers.length === 0 && (
-                      <div className="muted">No precedence order available.</div>
-                    )}
-                    {replayPreStealPrecedencePlayers.length > 0 && (
-                      <ol className="pre-steal-precedence-list">
-                        {replayPreStealPrecedencePlayers.map((player) => (
-                          <li key={player.id}>
-                            <span>{player.name}</span>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
+            <div className="words board-words">
+              {orderedReplayPlayers.map((player) => (
+                <ReplayWordList key={player.id} player={player} />
+              ))}
+            </div>
           </section>
           <section className="replay-scoreboard">
-            <h3>Scores & Words</h3>
+            <h3>Players</h3>
             <div className="player-list">
-              {activeReplayState.players.map((player) => (
+              {orderedReplayPlayers.map((player) => (
                 <div key={player.id} className="player">
                   <div>
                     <strong>{player.name}</strong>
@@ -2576,11 +2545,34 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="words board-words">
-              {activeReplayState.players.map((player) => (
-                <ReplayWordList key={player.id} player={player} />
-              ))}
-            </div>
+            {activeReplayState.preStealEnabled && (
+              <div className="pre-steal-panel replay-pre-steal-panel">
+                <div className="pre-steal-entries-column">
+                  <div className="word-header">
+                    <span>Pre-steal entries</span>
+                  </div>
+                  {replayPreStealPlayers.map((player) => (
+                    <div key={player.id} className="word-list">
+                      <div className="word-header">
+                        <span>{player.name}</span>
+                      </div>
+                      {player.preStealEntries.length === 0 && (
+                        <div className="muted">No entries.</div>
+                      )}
+                      {player.preStealEntries.map((entry) => (
+                        <div key={entry.id} className="pre-steal-entry">
+                          <span className="pre-steal-entry-text">
+                            {entry.triggerLetters}
+                            {" -> "}
+                            {entry.claimWord}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         </div>
         {isReplayAnalysisOpen && (
@@ -3388,9 +3380,6 @@ export default function App() {
                     <div className="word-header">
                       <span>Pre-steal entries</span>
                     </div>
-                    {spectatorPreStealPlayers.every((player) => player.preStealEntries.length === 0) && (
-                      <div className="muted">No pre-steal entries.</div>
-                    )}
                     {spectatorPreStealPlayers.map((player) => (
                       <div key={player.id} className="word-list">
                         <div className="word-header">
@@ -3437,9 +3426,6 @@ export default function App() {
                       </button>
                     </div>
 
-                    {myPreStealEntries.length === 0 && (
-                      <div className="muted">No pre-steal entries.</div>
-                    )}
                     {myPreStealEntries.map((entry) => (
                       <div
                         key={entry.id}
