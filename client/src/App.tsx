@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { io } from "socket.io-client";
 import type {
+  GameReplay,
   GameState,
   Player,
   PracticeDifficulty,
@@ -10,8 +11,10 @@ import type {
   PracticeScoredWord,
   PracticeSharePayload,
   PracticeValidateCustomResponse,
+  ReplayAnalysisMap,
   ReplayAnalysisResponse,
   ReplayAnalysisResult,
+  ReplayFileV1,
   ReplayPlayerSnapshot,
   ReplayStateSnapshot,
   RoomState,
@@ -27,6 +30,17 @@ import {
   decodePracticeResultSharePayload,
   encodePracticeResultSharePayload
 } from "@shared/practiceResultShare";
+import {
+  buildReplayFileV1,
+  parseReplayFile,
+  serializeReplayFile
+} from "@shared/replayFile";
+import {
+  MAX_REPLAY_IMPORT_FILE_BYTES,
+  buildReplayExportFilename,
+  getImportedReplayAnalysis,
+  toReplayAnalysisMap
+} from "./replayImportExport";
 import {
   buildUserSettingsContextValue,
   persistUserSettings,
@@ -238,6 +252,7 @@ const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MIN = 4;
 const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX = 16;
 const CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX = 96;
 const CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS = 5_000;
+const REPLAY_FILE_INPUT_ACCEPT = "application/json,.json";
 const CLAIM_FAILURE_MESSAGES = new Set([
   "Claim window expired.",
   "Enter a word to claim.",
@@ -298,6 +313,16 @@ type EditorPuzzleDraft = {
   normalizedCenter: string;
   normalizedExistingWords: string[];
 };
+
+type ReplaySource =
+  | {
+      kind: "room";
+      replay: GameReplay;
+    }
+  | {
+      kind: "imported";
+      file: ReplayFileV1;
+    };
 
 function clampFlipTimerSeconds(value: number) {
   const rounded = Math.round(value);
@@ -520,8 +545,13 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [isReplayMode, setIsReplayMode] = useState(false);
   const [replayStepIndex, setReplayStepIndex] = useState(0);
+  const [replaySource, setReplaySource] = useState<ReplaySource | null>(null);
+  const [importReplayError, setImportReplayError] = useState<string | null>(null);
   const [isReplayAnalysisOpen, setIsReplayAnalysisOpen] = useState(false);
   const [replayAnalysisByStepIndex, setReplayAnalysisByStepIndex] = useState<
+    Record<number, ReplayAnalysisResult>
+  >({});
+  const [importedReplayAnalysisByStepIndex, setImportedReplayAnalysisByStepIndex] = useState<
     Record<number, ReplayAnalysisResult>
   >({});
   const [replayAnalysisLoadingStepIndex, setReplayAnalysisLoadingStepIndex] = useState<number | null>(null);
@@ -582,6 +612,7 @@ export default function App() {
   const [showAllPracticeOptions, setShowAllPracticeOptions] = useState(false);
   const claimInputRef = useRef<HTMLInputElement>(null);
   const practiceInputRef = useRef<HTMLInputElement>(null);
+  const replayImportInputRef = useRef<HTMLInputElement>(null);
   const gameLogListRef = useRef<HTMLDivElement>(null);
   const previousGameStateRef = useRef<GameState | null>(null);
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
@@ -897,12 +928,26 @@ export default function App() {
   const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isTileSelectionEnabled = isTileInputMethodEnabled && !isSpectator;
   const shouldShowGameLog = Boolean(gameState) && roomState?.status === "in-game";
-  const replaySteps = useMemo(
+  const roomReplay = gameState?.replay ?? null;
+  const roomReplaySteps = useMemo(
     () =>
-      (gameState?.replay?.steps ?? []).filter(
+      (roomReplay?.steps ?? []).filter(
         (step) => step.kind === "flip-revealed" || step.kind === "claim-succeeded"
       ),
-    [gameState?.replay?.steps]
+    [roomReplay?.steps]
+  );
+  const activeReplay =
+    replaySource?.kind === "imported"
+      ? replaySource.file.replay
+      : replaySource?.kind === "room"
+        ? replaySource.replay
+        : null;
+  const replaySteps = useMemo(
+    () =>
+      (activeReplay?.steps ?? []).filter(
+        (step) => step.kind === "flip-revealed" || step.kind === "claim-succeeded"
+      ),
+    [activeReplay?.steps]
   );
   const maxReplayStepIndex = replaySteps.length > 0 ? replaySteps.length - 1 : 0;
   const clampedReplayStepIndex = Math.min(Math.max(replayStepIndex, 0), maxReplayStepIndex);
@@ -913,10 +958,17 @@ export default function App() {
     [replaySteps, clampedReplayStepIndex]
   );
   const activeReplayRequestedStepIndex = activeReplayStep?.index ?? null;
+  const activeImportedReplayAnalysis =
+    replaySource?.kind === "imported" && activeReplayRequestedStepIndex !== null
+      ? importedReplayAnalysisByStepIndex[activeReplayRequestedStepIndex] ??
+        getImportedReplayAnalysis(replaySource.file, activeReplayRequestedStepIndex)
+      : null;
   const activeReplayAnalysis =
     activeReplayRequestedStepIndex === null
       ? null
-      : replayAnalysisByStepIndex[activeReplayRequestedStepIndex] ?? null;
+      : replaySource?.kind === "imported"
+        ? activeImportedReplayAnalysis
+        : replayAnalysisByStepIndex[activeReplayRequestedStepIndex] ?? null;
   const isActiveReplayAnalysisLoading =
     activeReplayRequestedStepIndex !== null &&
     replayAnalysisLoadingStepIndex === activeReplayRequestedStepIndex;
@@ -949,6 +1001,9 @@ export default function App() {
       hiddenReplayAnalysisOptionCount: Math.max(0, activeReplayAnalysis.allOptions.length - visibleCount)
     };
   }, [activeReplayAnalysis, showAllReplayOptionsByStep]);
+  const canExportReplay = Boolean(
+    roomState?.status === "ended" && replaySource?.kind === "room" && roomReplay
+  );
   const replayTurnPlayerName = activeReplayState
     ? getPlayerName(activeReplayState.players, activeReplayState.turnPlayerId)
     : "Unknown";
@@ -1421,8 +1476,11 @@ export default function App() {
     setGameState(null);
     setIsReplayMode(false);
     setReplayStepIndex(0);
+    setReplaySource(null);
+    setImportReplayError(null);
     setIsReplayAnalysisOpen(false);
     setReplayAnalysisByStepIndex({});
+    setImportedReplayAnalysisByStepIndex({});
     setReplayAnalysisLoadingStepIndex(null);
     setReplayAnalysisError(null);
     setShowAllReplayOptionsByStep({});
@@ -1433,10 +1491,81 @@ export default function App() {
     lastClaimFailureRef.current = null;
   };
 
+  const handleOpenReplayImport = useCallback(() => {
+    setImportReplayError(null);
+    replayImportInputRef.current?.click();
+  }, []);
+
+  const handleReplayFileInputChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    if (file.size > MAX_REPLAY_IMPORT_FILE_BYTES) {
+      setImportReplayError("File is too large.");
+      return;
+    }
+
+    try {
+      const fileText = await file.text();
+      const parsed = parseReplayFile(fileText);
+      if (!parsed.ok) {
+        setImportReplayError(parsed.message);
+        return;
+      }
+
+      setReplaySource({
+        kind: "imported",
+        file: parsed.file
+      });
+      setImportReplayError(null);
+      setIsReplayMode(true);
+      setReplayStepIndex(0);
+      setIsReplayAnalysisOpen(false);
+      setImportedReplayAnalysisByStepIndex({});
+      setReplayAnalysisLoadingStepIndex(null);
+      setReplayAnalysisError(null);
+      setShowAllReplayOptionsByStep({});
+    } catch {
+      setImportReplayError("Replay file is invalid or corrupted.");
+    }
+  }, []);
+
+  const handleExportReplay = useCallback(() => {
+    if (!roomReplay || roomState?.status !== "ended") return;
+
+    const analysisByStepIndex: ReplayAnalysisMap | undefined = toReplayAnalysisMap(replayAnalysisByStepIndex);
+    const replayFile = buildReplayFileV1({
+      replay: roomReplay,
+      analysisByStepIndex,
+      sourceRoomId: roomState.id,
+      app: "anagram-thief-web"
+    });
+    const payload = serializeReplayFile(replayFile);
+    const blob = new Blob([payload], { type: "application/json" });
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.download = buildReplayExportFilename(replayFile.exportedAt);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(downloadUrl);
+  }, [roomReplay, roomState?.id, roomState?.status, replayAnalysisByStepIndex]);
+
+  const handleExitReplayView = useCallback(() => {
+    setIsReplayMode(false);
+    setReplayStepIndex(0);
+    setReplaySource(null);
+    setIsReplayAnalysisOpen(false);
+    setImportedReplayAnalysisByStepIndex({});
+    setReplayAnalysisLoadingStepIndex(null);
+    setReplayAnalysisError(null);
+    setShowAllReplayOptionsByStep({});
+  }, []);
+
   const fetchReplayAnalysisForStep = useCallback(
     (requestedStepIndex: number) => {
-      if (!roomState) return;
-      if (roomState.status !== "ended") return;
       if (!Number.isInteger(requestedStepIndex) || requestedStepIndex < 0) return;
 
       setReplayAnalysisError(null);
@@ -1452,46 +1581,77 @@ export default function App() {
         setReplayAnalysisError("Replay analysis timed out. Please try again.");
       }, REPLAY_ANALYSIS_TIMEOUT_MS);
 
-      socket.emit(
-        "replay:analyze-step",
-        { roomId: roomState.id, stepIndex: requestedStepIndex },
-        (response: ReplayAnalysisResponse) => {
-          if (isSettled) return;
-          isSettled = true;
-          window.clearTimeout(timeoutId);
-          setReplayAnalysisLoadingStepIndex((current) =>
-            current === requestedStepIndex ? null : current
-          );
+      const handleResponse = (response: ReplayAnalysisResponse, source: "room" | "imported") => {
+        if (isSettled) return;
+        isSettled = true;
+        window.clearTimeout(timeoutId);
+        setReplayAnalysisLoadingStepIndex((current) =>
+          current === requestedStepIndex ? null : current
+        );
 
-          if (!response || typeof response.ok !== "boolean") {
-            setReplayAnalysisError("Replay analysis failed.");
-            return;
-          }
+        if (!response || typeof response.ok !== "boolean") {
+          setReplayAnalysisError("Replay analysis failed.");
+          return;
+        }
 
-          if (!response.ok) {
-            setReplayAnalysisError(response.message || "Replay analysis failed.");
-            return;
-          }
+        if (!response.ok) {
+          setReplayAnalysisError(response.message || "Replay analysis failed.");
+          return;
+        }
 
+        if (source === "imported") {
+          setImportedReplayAnalysisByStepIndex((current) => ({
+            ...current,
+            [response.result.requestedStepIndex]: response.result
+          }));
+        } else {
           setReplayAnalysisByStepIndex((current) => ({
             ...current,
             [response.result.requestedStepIndex]: response.result
           }));
-          setReplayAnalysisError(null);
         }
+        setReplayAnalysisError(null);
+      };
+
+      if (replaySource?.kind === "imported") {
+        socket.emit(
+          "replay:analyze-imported-step",
+          { replayFile: replaySource.file, stepIndex: requestedStepIndex },
+          (response: ReplayAnalysisResponse) => handleResponse(response, "imported")
+        );
+        return;
+      }
+
+      if (!roomState || roomState.status !== "ended") {
+        window.clearTimeout(timeoutId);
+        setReplayAnalysisLoadingStepIndex((current) =>
+          current === requestedStepIndex ? null : current
+        );
+        return;
+      }
+
+      socket.emit(
+        "replay:analyze-step",
+        { roomId: roomState.id, stepIndex: requestedStepIndex },
+        (response: ReplayAnalysisResponse) => handleResponse(response, "room")
       );
     },
-    [roomState]
+    [roomState, replaySource]
   );
 
   const handleEnterReplay = useCallback(() => {
-    if (replaySteps.length === 0) return;
+    if (!roomReplay || roomReplaySteps.length === 0) return;
+    setReplaySource({
+      kind: "room",
+      replay: roomReplay
+    });
+    setImportReplayError(null);
     setReplayStepIndex(0);
     setIsReplayAnalysisOpen(false);
     setReplayAnalysisError(null);
     setReplayAnalysisLoadingStepIndex(null);
     setIsReplayMode(true);
-  }, [replaySteps.length]);
+  }, [roomReplay, roomReplaySteps.length]);
 
   const handleConfirmLeaveGame = () => {
     setShowLeaveGameConfirm(false);
@@ -1802,13 +1962,15 @@ export default function App() {
       removePrivateRoomJoinFromUrl();
       setLobbyError(null);
       setPendingResultAutoSubmit(null);
+      setReplaySource((current) => (current?.kind === "imported" ? null : current));
+      setImportReplayError(null);
       return;
     }
     setLobbyView("list");
   }, [roomState]);
 
   useEffect(() => {
-    if (roomState) return;
+    if (roomState || replaySource?.kind === "imported") return;
     setQueuedTileClaimLetters("");
     setPreStealTriggerInput("");
     setPreStealClaimWordInput("");
@@ -1820,16 +1982,51 @@ export default function App() {
     setReplayAnalysisLoadingStepIndex(null);
     setReplayAnalysisError(null);
     setShowAllReplayOptionsByStep({});
-  }, [roomState]);
+  }, [roomState, replaySource?.kind]);
+
+  useEffect(() => {
+    if (!isReplayMode) return;
+    if (replaySource) return;
+    if (roomState?.status !== "ended" || !roomReplay) return;
+    setReplaySource({
+      kind: "room",
+      replay: roomReplay
+    });
+  }, [isReplayMode, replaySource, roomState?.status, roomReplay]);
+
+  useEffect(() => {
+    if (replaySource?.kind !== "room") return;
+    if (!roomReplay) return;
+    setReplaySource((current) => {
+      if (!current || current.kind !== "room") return current;
+      if (current.replay === roomReplay) return current;
+      return {
+        kind: "room",
+        replay: roomReplay
+      };
+    });
+  }, [replaySource?.kind, roomReplay]);
 
   useEffect(() => {
     setReplayStepIndex((current) => Math.min(Math.max(current, 0), maxReplayStepIndex));
   }, [maxReplayStepIndex]);
 
   useEffect(() => {
+    if (replaySource?.kind === "imported") {
+      if (replaySteps.length === 0) {
+        setIsReplayMode(false);
+        setReplayStepIndex(0);
+        setReplaySource(null);
+        setIsReplayAnalysisOpen(false);
+        setReplayAnalysisLoadingStepIndex(null);
+        setReplayAnalysisError(null);
+      }
+      return;
+    }
     if (!roomState || roomState.status !== "ended") {
       setIsReplayMode(false);
       setReplayStepIndex(0);
+      setReplaySource(null);
       setIsReplayAnalysisOpen(false);
       setReplayAnalysisLoadingStepIndex(null);
       setReplayAnalysisError(null);
@@ -1838,11 +2035,12 @@ export default function App() {
     if (replaySteps.length === 0) {
       setIsReplayMode(false);
       setReplayStepIndex(0);
+      setReplaySource(null);
       setIsReplayAnalysisOpen(false);
       setReplayAnalysisLoadingStepIndex(null);
       setReplayAnalysisError(null);
     }
-  }, [roomState, replaySteps.length]);
+  }, [roomState, replaySource?.kind, replaySteps.length]);
 
   useEffect(() => {
     setReplayAnalysisError(null);
@@ -1850,17 +2048,26 @@ export default function App() {
 
   useEffect(() => {
     if (!isReplayMode || !isReplayAnalysisOpen) return;
-    if (!roomState || roomState.status !== "ended") return;
     if (!activeReplayStep) return;
     const requestedStepIndex = activeReplayStep.index;
-    if (replayAnalysisByStepIndex[requestedStepIndex]) return;
+    if (replaySource?.kind === "imported") {
+      const importedCached =
+        importedReplayAnalysisByStepIndex[requestedStepIndex] ??
+        getImportedReplayAnalysis(replaySource.file, requestedStepIndex);
+      if (importedCached) return;
+    } else if (replayAnalysisByStepIndex[requestedStepIndex]) {
+      return;
+    }
     if (replayAnalysisLoadingStepIndex === requestedStepIndex) return;
     fetchReplayAnalysisForStep(requestedStepIndex);
   }, [
     isReplayMode,
     isReplayAnalysisOpen,
+    replaySource?.kind,
+    replaySource,
     roomState,
     activeReplayStep,
+    importedReplayAnalysisByStepIndex,
     replayAnalysisByStepIndex,
     replayAnalysisLoadingStepIndex,
     fetchReplayAnalysisForStep
@@ -2112,6 +2319,226 @@ export default function App() {
     selfPlayerId
   ]);
 
+  const replayBackButtonLabel = roomState?.status === "ended" ? "Back to final scores" : "Close replay";
+  const replayPanelContent =
+    isReplayMode && activeReplayState ? (
+      <div className="replay-panel">
+        <div className="button-row">
+          <button className="button-secondary" onClick={handleExitReplayView}>
+            {replayBackButtonLabel}
+          </button>
+          {roomState && (
+            <button className="button-secondary" onClick={handleLeaveRoom}>
+              Return to lobby
+            </button>
+          )}
+        </div>
+        <div className="replay-controls">
+          <button
+            className="button-secondary"
+            onClick={() => setReplayStepIndex(0)}
+            disabled={clampedReplayStepIndex <= 0}
+          >
+            Start
+          </button>
+          <button
+            className="button-secondary"
+            onClick={() => setReplayStepIndex((current) => Math.max(0, current - 1))}
+            disabled={clampedReplayStepIndex <= 0}
+          >
+            Prev
+          </button>
+          <span className="replay-step-label">
+            Step {clampedReplayStepIndex + 1} / {replaySteps.length}
+          </span>
+          <button
+            className="button-secondary"
+            onClick={() => setReplayStepIndex((current) => Math.min(maxReplayStepIndex, current + 1))}
+            disabled={clampedReplayStepIndex >= maxReplayStepIndex}
+          >
+            Next
+          </button>
+          <button
+            className="button-secondary"
+            onClick={() => setReplayStepIndex(maxReplayStepIndex)}
+            disabled={clampedReplayStepIndex >= maxReplayStepIndex}
+          >
+            End
+          </button>
+          <button
+            className="button-secondary"
+            onClick={() => setIsReplayAnalysisOpen((current) => !current)}
+          >
+            {isReplayAnalysisOpen ? "Hide analysis" : "Show analysis"}
+          </button>
+          <button className="button-secondary" onClick={handleOpenReplayImport}>
+            Import replay
+          </button>
+          {canExportReplay && (
+            <button className="button-secondary" onClick={handleExportReplay}>
+              Export replay (.json)
+            </button>
+          )}
+        </div>
+        {importReplayError && (
+          <div className="replay-import-error" role="alert">
+            {importReplayError}
+          </div>
+        )}
+        <div className="replay-board-layout">
+          <section className="replay-board">
+            <div className="replay-board-header">
+              <div>
+                <h3>Replay Board</h3>
+                <p className="muted">{activeReplayActionText}</p>
+              </div>
+              <div className="turn">
+                <span>Turn:</span>
+                <strong>{replayTurnPlayerName}</strong>
+              </div>
+            </div>
+            <p className="muted">Bag: {activeReplayState.bagCount} tiles</p>
+            {activeReplayState.pendingFlip && (
+              <p className="muted">
+                {getPlayerName(activeReplayState.players, activeReplayState.pendingFlip.playerId)} is revealing a
+                tile...
+              </p>
+            )}
+            <div className="tiles">
+              {activeReplayState.centerTiles.length === 0 && (
+                <div className="muted">No tiles flipped yet.</div>
+              )}
+              {activeReplayState.centerTiles.map((tile) => (
+                <div key={tile.id} className="tile">
+                  {tile.letter}
+                </div>
+              ))}
+            </div>
+
+            {activeReplayState.preStealEnabled && (
+              <div className="pre-steal-panel replay-pre-steal-panel">
+                <div className="pre-steal-layout">
+                  <div className="pre-steal-entries-column">
+                    <div className="word-header">
+                      <span>Pre-steal entries</span>
+                    </div>
+                    {replayPreStealPlayers.map((player) => (
+                      <div key={player.id} className="word-list">
+                        <div className="word-header">
+                          <span>{player.name}</span>
+                        </div>
+                        {player.preStealEntries.map((entry) => (
+                          <div key={entry.id} className="pre-steal-entry">
+                            <span className="pre-steal-entry-text">
+                              {entry.triggerLetters}
+                              {" -> "}
+                              {entry.claimWord}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="pre-steal-precedence-column">
+                    <div className="word-header">
+                      <span>Precendence</span>
+                    </div>
+                    {replayPreStealPrecedencePlayers.length === 0 && (
+                      <div className="muted">No precedence order available.</div>
+                    )}
+                    {replayPreStealPrecedencePlayers.length > 0 && (
+                      <ol className="pre-steal-precedence-list">
+                        {replayPreStealPrecedencePlayers.map((player) => (
+                          <li key={player.id}>
+                            <span>{player.name}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+          <section className="replay-scoreboard">
+            <h3>Scores & Words</h3>
+            <div className="player-list">
+              {activeReplayState.players.map((player) => (
+                <div key={player.id} className="player">
+                  <div>
+                    <strong>{player.name}</strong>
+                    {player.id === activeReplayState.turnPlayerId && <span className="badge">turn</span>}
+                  </div>
+                  <span className="score">{player.score}</span>
+                </div>
+              ))}
+            </div>
+            <div className="words">
+              {activeReplayState.players.map((player) => (
+                <ReplayWordList key={player.id} player={player} />
+              ))}
+            </div>
+          </section>
+        </div>
+        {isReplayAnalysisOpen && (
+          <section className="replay-analysis-panel">
+            <div className="replay-analysis-header">
+              <h3>Best moves</h3>
+              {activeReplayAnalysis && (
+                <span className="score">Best score: {activeReplayAnalysis.bestScore}</span>
+              )}
+            </div>
+            {isActiveReplayAnalysisLoading && <div className="muted">Analyzing this replay step...</div>}
+            {!isActiveReplayAnalysisLoading && replayAnalysisError && (
+              <div className="practice-submit-error" role="alert">
+                {replayAnalysisError}
+              </div>
+            )}
+            {!isActiveReplayAnalysisLoading && !replayAnalysisError && activeReplayAnalysis && (
+              <>
+                <p className="muted">
+                  {activeReplayAnalysis.basis === "before-claim"
+                    ? "Analyzed from state before this claim."
+                    : "Analyzed from this revealed-tile state."}
+                </p>
+                <div className="practice-options">
+                  {visibleReplayAnalysisOptions.map((option) => (
+                    <div
+                      key={`${activeReplayAnalysis.requestedStepIndex}-${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
+                      className="practice-option"
+                    >
+                      <div>
+                        <strong>{formatPracticeOptionLabel(option)}</strong>
+                      </div>
+                      <span className="score">{option.score}</span>
+                    </div>
+                  ))}
+                  {hiddenReplayAnalysisOptionCount > 0 &&
+                    !showAllReplayOptionsByStep[activeReplayAnalysis.requestedStepIndex] && (
+                      <button
+                        type="button"
+                        className="practice-option-more"
+                        onClick={() =>
+                          setShowAllReplayOptionsByStep((current) => ({
+                            ...current,
+                            [activeReplayAnalysis.requestedStepIndex]: true
+                          }))
+                        }
+                      >
+                        more
+                      </button>
+                    )}
+                  {activeReplayAnalysis.allOptions.length === 0 && (
+                    <div className="muted">No valid moves from this position.</div>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+      </div>
+    ) : null;
+
   if (!playerName) {
     return (
       <div className="name-gate">
@@ -2144,6 +2571,13 @@ export default function App() {
   return (
     <UserSettingsContext.Provider value={userSettingsContextValue}>
       <div className={pageClassName}>
+        <input
+          ref={replayImportInputRef}
+          type="file"
+          accept={REPLAY_FILE_INPUT_ACCEPT}
+          onChange={handleReplayFileInputChange}
+          className="hidden-file-input"
+        />
         <header className="header">
           <div>
             <h1>Anagram Thief</h1>
@@ -2162,7 +2596,7 @@ export default function App() {
           </div>
         </header>
 
-      {!roomState && !practiceState.active && lobbyView === "list" && (
+      {!roomState && !practiceState.active && !isReplayMode && lobbyView === "list" && (
         <div className="grid">
           <section className="panel">
             <h2>Open Games</h2>
@@ -2223,12 +2657,20 @@ export default function App() {
               <button className="button-secondary" onClick={handleOpenPracticeEditor}>
                 Create custom puzzle
               </button>
+              <button className="button-secondary" onClick={handleOpenReplayImport}>
+                Import replay
+              </button>
             </div>
+            {importReplayError && (
+              <div className="replay-import-error" role="alert">
+                {importReplayError}
+              </div>
+            )}
           </section>
         </div>
       )}
 
-      {!roomState && !practiceState.active && lobbyView === "create" && (
+      {!roomState && !practiceState.active && !isReplayMode && lobbyView === "create" && (
         <div className="grid">
           <section className="panel panel-narrow">
             <h2>New Game</h2>
@@ -2312,7 +2754,7 @@ export default function App() {
         </div>
       )}
 
-      {!roomState && !practiceState.active && lobbyView === "editor" && (
+      {!roomState && !practiceState.active && !isReplayMode && lobbyView === "editor" && (
         <div className="grid">
           <section className="panel panel-narrow practice-editor">
             <h2>Custom Practice Puzzle</h2>
@@ -2999,217 +3441,20 @@ export default function App() {
                 <button className="button-secondary" onClick={handleLeaveRoom}>
                   Return to lobby
                 </button>
-                <button onClick={handleEnterReplay} disabled={replaySteps.length === 0}>
+                <button onClick={handleEnterReplay} disabled={roomReplaySteps.length === 0}>
                   Watch replay
                 </button>
               </div>
-              {replaySteps.length === 0 && <p className="muted">Replay unavailable for this game.</p>}
+              {roomReplaySteps.length === 0 && <p className="muted">Replay unavailable for this game.</p>}
             </>
           )}
-          {isReplayMode && activeReplayState && (
-            <div className="replay-panel">
-              <div className="button-row">
-                <button className="button-secondary" onClick={() => setIsReplayMode(false)}>
-                  Back to final scores
-                </button>
-                <button className="button-secondary" onClick={handleLeaveRoom}>
-                  Return to lobby
-                </button>
-              </div>
-              <div className="replay-controls">
-                <button
-                  className="button-secondary"
-                  onClick={() => setReplayStepIndex(0)}
-                  disabled={clampedReplayStepIndex <= 0}
-                >
-                  Start
-                </button>
-                <button
-                  className="button-secondary"
-                  onClick={() => setReplayStepIndex((current) => Math.max(0, current - 1))}
-                  disabled={clampedReplayStepIndex <= 0}
-                >
-                  Prev
-                </button>
-                <span className="replay-step-label">
-                  Step {clampedReplayStepIndex + 1} / {replaySteps.length}
-                </span>
-                <button
-                  className="button-secondary"
-                  onClick={() => setReplayStepIndex((current) => Math.min(maxReplayStepIndex, current + 1))}
-                  disabled={clampedReplayStepIndex >= maxReplayStepIndex}
-                >
-                  Next
-                </button>
-                <button
-                  className="button-secondary"
-                  onClick={() => setReplayStepIndex(maxReplayStepIndex)}
-                  disabled={clampedReplayStepIndex >= maxReplayStepIndex}
-                >
-                  End
-                </button>
-                <button
-                  className="button-secondary"
-                  onClick={() => setIsReplayAnalysisOpen((current) => !current)}
-                >
-                  {isReplayAnalysisOpen ? "Hide analysis" : "Show analysis"}
-                </button>
-              </div>
-              <div className="replay-board-layout">
-                <section className="replay-board">
-                  <div className="replay-board-header">
-                    <div>
-                      <h3>Replay Board</h3>
-                      <p className="muted">{activeReplayActionText}</p>
-                    </div>
-                    <div className="turn">
-                      <span>Turn:</span>
-                      <strong>{replayTurnPlayerName}</strong>
-                    </div>
-                  </div>
-                  <p className="muted">Bag: {activeReplayState.bagCount} tiles</p>
-                  {activeReplayState.pendingFlip && (
-                    <p className="muted">
-                      {getPlayerName(activeReplayState.players, activeReplayState.pendingFlip.playerId)} is revealing
-                      a tile...
-                    </p>
-                  )}
-                  <div className="tiles">
-                    {activeReplayState.centerTiles.length === 0 && (
-                      <div className="muted">No tiles flipped yet.</div>
-                    )}
-                    {activeReplayState.centerTiles.map((tile) => (
-                      <div key={tile.id} className="tile">
-                        {tile.letter}
-                      </div>
-                    ))}
-                  </div>
+          {replayPanelContent}
+        </div>
+      )}
 
-                  {activeReplayState.preStealEnabled && (
-                    <div className="pre-steal-panel replay-pre-steal-panel">
-                      <div className="pre-steal-layout">
-                        <div className="pre-steal-entries-column">
-                          <div className="word-header">
-                            <span>Pre-steal entries</span>
-                          </div>
-                          {replayPreStealPlayers.map((player) => (
-                            <div key={player.id} className="word-list">
-                              <div className="word-header">
-                                <span>{player.name}</span>
-                              </div>
-                              {player.preStealEntries.map((entry) => (
-                                <div key={entry.id} className="pre-steal-entry">
-                                  <span className="pre-steal-entry-text">
-                                    {entry.triggerLetters}
-                                    {" -> "}
-                                    {entry.claimWord}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="pre-steal-precedence-column">
-                          <div className="word-header">
-                            <span>Precendence</span>
-                          </div>
-                          {replayPreStealPrecedencePlayers.length === 0 && (
-                            <div className="muted">No precedence order available.</div>
-                          )}
-                          {replayPreStealPrecedencePlayers.length > 0 && (
-                            <ol className="pre-steal-precedence-list">
-                              {replayPreStealPrecedencePlayers.map((player) => (
-                                <li key={player.id}>
-                                  <span>{player.name}</span>
-                                </li>
-                              ))}
-                            </ol>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </section>
-                <section className="replay-scoreboard">
-                  <h3>Scores & Words</h3>
-                  <div className="player-list">
-                    {activeReplayState.players.map((player) => (
-                      <div key={player.id} className="player">
-                        <div>
-                          <strong>{player.name}</strong>
-                          {player.id === activeReplayState.turnPlayerId && <span className="badge">turn</span>}
-                        </div>
-                        <span className="score">{player.score}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="words">
-                    {activeReplayState.players.map((player) => (
-                      <ReplayWordList key={player.id} player={player} />
-                    ))}
-                  </div>
-                </section>
-              </div>
-              {isReplayAnalysisOpen && (
-                <section className="replay-analysis-panel">
-                  <div className="replay-analysis-header">
-                    <h3>Best moves</h3>
-                    {activeReplayAnalysis && (
-                      <span className="score">Best score: {activeReplayAnalysis.bestScore}</span>
-                    )}
-                  </div>
-                  {isActiveReplayAnalysisLoading && (
-                    <div className="muted">Analyzing this replay step...</div>
-                  )}
-                  {!isActiveReplayAnalysisLoading && replayAnalysisError && (
-                    <div className="practice-submit-error" role="alert">
-                      {replayAnalysisError}
-                    </div>
-                  )}
-                  {!isActiveReplayAnalysisLoading && !replayAnalysisError && activeReplayAnalysis && (
-                    <>
-                      <p className="muted">
-                        {activeReplayAnalysis.basis === "before-claim"
-                          ? "Analyzed from state before this claim."
-                          : "Analyzed from this revealed-tile state."}
-                      </p>
-                      <div className="practice-options">
-                        {visibleReplayAnalysisOptions.map((option) => (
-                          <div
-                            key={`${activeReplayAnalysis.requestedStepIndex}-${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
-                            className="practice-option"
-                          >
-                            <div>
-                              <strong>{formatPracticeOptionLabel(option)}</strong>
-                            </div>
-                            <span className="score">{option.score}</span>
-                          </div>
-                        ))}
-                        {hiddenReplayAnalysisOptionCount > 0 &&
-                          !showAllReplayOptionsByStep[activeReplayAnalysis.requestedStepIndex] && (
-                            <button
-                              type="button"
-                              className="practice-option-more"
-                              onClick={() =>
-                                setShowAllReplayOptionsByStep((current) => ({
-                                  ...current,
-                                  [activeReplayAnalysis.requestedStepIndex]: true
-                                }))
-                              }
-                            >
-                              more
-                            </button>
-                          )}
-                        {activeReplayAnalysis.allOptions.length === 0 && (
-                          <div className="muted">No valid moves from this position.</div>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </section>
-              )}
-            </div>
-          )}
+      {!roomState && replaySource?.kind === "imported" && replayPanelContent && (
+        <div className="panel">
+          {replayPanelContent}
         </div>
       )}
 

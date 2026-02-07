@@ -35,6 +35,7 @@ import type {
 } from "../../shared/types.js";
 import { createTileBag } from "../../shared/tileBag.js";
 import { isValidWord, loadWordSet, normalizeWord } from "../../shared/wordValidation.js";
+import { validateReplayFile } from "../../shared/replayFile.js";
 import {
   clampPracticeDifficulty,
   createPracticeEngine,
@@ -2067,6 +2068,51 @@ io.on("connection", (socket) => {
       if (response.ok) {
         game.replayAnalysisCache.set(stepIndex, response.result);
       }
+      callback(response);
+    }
+  );
+
+  socket.on(
+    "replay:analyze-imported-step",
+    (
+      { replayFile, stepIndex }: { replayFile: unknown; stepIndex: number },
+      callback?: (response: ReplayAnalysisResponse) => void
+    ) => {
+      if (typeof callback !== "function") {
+        return;
+      }
+
+      const currentSession = getSessionBySocket(socket);
+      if (!currentSession) {
+        callback({
+          ok: false,
+          message: "Session not found."
+        });
+        return;
+      }
+
+      if (!Number.isInteger(stepIndex)) {
+        callback({
+          ok: false,
+          message: "Replay step not found."
+        });
+        return;
+      }
+
+      const validation = validateReplayFile(replayFile);
+      if (!validation.ok) {
+        callback({
+          ok: false,
+          message: validation.message
+        });
+        return;
+      }
+
+      const response = analyzeReplayStep(
+        { replay: validation.file.replay },
+        stepIndex,
+        (candidatePuzzle) => practiceEngine.solvePuzzle(candidatePuzzle)
+      );
       callback(response);
     }
   );

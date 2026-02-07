@@ -163,6 +163,36 @@ export type ReplayAnalysisResponse =
       message: string;
     };
 
+export type ReplayFileKind = "anagram-thief-replay";
+
+export type ReplayFileVersion = 1;
+
+export type ReplayAnalysisMap = Record<string, ReplayAnalysisResult>;
+
+export interface ReplayFileV1 {
+  kind: ReplayFileKind;
+  v: ReplayFileVersion;
+  exportedAt: number;
+  replay: GameReplay;
+  analysisByStepIndex?: ReplayAnalysisMap;
+  meta: {
+    source: "ended-room";
+    sourceRoomId?: string;
+    sourceStatus: "ended";
+    app?: string;
+  };
+}
+
+export type ReplayFileParseResult =
+  | {
+      ok: true;
+      file: ReplayFileV1;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
 export interface GameState {
   roomId: string;
   status: "in-game" | "ended";
