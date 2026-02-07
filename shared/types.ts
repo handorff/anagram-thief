@@ -286,3 +286,52 @@ export interface PracticeModeState {
   puzzle: PracticePuzzle | null;
   result: PracticeResult | null;
 }
+
+export interface AdminLoginResponse {
+  token: string;
+  expiresAt: number;
+}
+
+export interface AdminOnlinePlayerSummary {
+  id: string;
+  name: string;
+}
+
+export interface AdminEndGameWarningResponse {
+  ok: false;
+  roomId: string;
+  requiresAcknowledgement: true;
+  onlinePlayers: AdminOnlinePlayerSummary[];
+  message: string;
+}
+
+export interface AdminGameSummary {
+  roomId: string;
+  roomName: string;
+  isPublic: boolean;
+  roomStatus: RoomStatus;
+  gameStatus: "in-game" | "ended" | null;
+  createdAt: number;
+  playerCount: number;
+  onlinePlayerCount: number;
+  offlinePlayerCount: number;
+  spectatorCount: number;
+  onlineSpectatorCount: number;
+  allPlayersOffline: boolean;
+  hasLiveGame: boolean;
+  bagCount: number | null;
+  centerTileCount: number | null;
+  turnPlayerId: string | null;
+  claimWindowEndsAt: number | null;
+  pendingFlipRevealsAt: number | null;
+  endTimerEndsAt: number | null;
+  lastActivityAt: number | null;
+  stuck: boolean;
+}
+
+export interface AdminGamesResponse {
+  generatedAt: number;
+  stuckThresholdMinutes: number;
+  games: AdminGameSummary[];
+  offlineGames: AdminGameSummary[];
+}

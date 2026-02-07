@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { io } from "socket.io-client";
 import type {
+  AdminEndGameWarningResponse,
+  AdminGameSummary,
+  AdminGamesResponse,
+  AdminLoginResponse,
   GameReplay,
   GameState,
   Player,
@@ -253,6 +257,7 @@ const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX = 16;
 const CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX = 96;
 const CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS = 5_000;
 const REPLAY_FILE_INPUT_ACCEPT = "application/json,.json";
+const ADMIN_REFRESH_INTERVAL_MS = 10_000;
 const CLAIM_FAILURE_MESSAGES = new Set([
   "Claim window expired.",
   "Enter a word to claim.",
@@ -357,6 +362,36 @@ function formatLogTime(timestamp: number) {
     second: "2-digit",
     hour12: false
   });
+}
+
+async function readJsonResponse(response: Response): Promise<unknown | null> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function getApiErrorMessage(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === "object" && typeof (payload as { message?: unknown }).message === "string") {
+    return (payload as { message: string }).message;
+  }
+  return fallback;
+}
+
+function isAdminEndGameWarningResponse(payload: unknown): payload is AdminEndGameWarningResponse {
+  if (!payload || typeof payload !== "object") return false;
+  const candidate = payload as Partial<AdminEndGameWarningResponse>;
+  if (candidate.ok !== false) return false;
+  if (candidate.requiresAcknowledgement !== true) return false;
+  if (typeof candidate.roomId !== "string" || !candidate.roomId) return false;
+  if (!Array.isArray(candidate.onlinePlayers)) return false;
+  return true;
+}
+
+function formatDateTime(timestamp: number | null): string {
+  if (!timestamp) return "n/a";
+  return new Date(timestamp).toLocaleString();
 }
 
 function getPracticeResultCategory(result: PracticeResult): {
@@ -598,6 +633,17 @@ export default function App() {
   const [userSettingsDraft, setUserSettingsDraft] = useState<UserSettings>(() => readStoredUserSettings());
   const [lobbyView, setLobbyView] = useState<"list" | "create" | "editor">("list");
   const [lobbyError, setLobbyError] = useState<string | null>(null);
+  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [adminTokenDraft, setAdminTokenDraft] = useState("");
+  const [adminSessionToken, setAdminSessionToken] = useState<string | null>(null);
+  const [adminSessionExpiresAt, setAdminSessionExpiresAt] = useState<number | null>(null);
+  const [adminGamesResponse, setAdminGamesResponse] = useState<AdminGamesResponse | null>(null);
+  const [adminGamesLoading, setAdminGamesLoading] = useState(false);
+  const [adminLoginLoading, setAdminLoginLoading] = useState(false);
+  const [adminCleanupLoading, setAdminCleanupLoading] = useState(false);
+  const [adminEndingRoomId, setAdminEndingRoomId] = useState<string | null>(null);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminStatusMessage, setAdminStatusMessage] = useState<string | null>(null);
 
   const [createRoomName, setCreateRoomName] = useState("");
   const [createPublic, setCreatePublic] = useState(true);
@@ -853,6 +899,8 @@ export default function App() {
     () => roomList.filter((room) => room.status === "in-game"),
     [roomList]
   );
+  const adminGames = adminGamesResponse?.games ?? [];
+  const adminOfflineGames = adminGamesResponse?.offlineGames ?? [];
   const userSettingsContextValue = useMemo(
     () => buildUserSettingsContextValue(userSettings),
     [userSettings]
@@ -1260,6 +1308,246 @@ export default function App() {
     );
   }, [editorPuzzleDraft.normalizedCenter.length, editorPuzzleDraft.normalizedExistingWords]);
 
+  const fetchAdminGamesForToken = useCallback(
+    async (token: string): Promise<boolean> => {
+      setAdminGamesLoading(true);
+      setAdminError(null);
+      try {
+        const response = await fetch(`${SERVER_URL}/admin/games`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+        const payload = await readJsonResponse(response);
+        if (response.status === 401) {
+          setAdminSessionToken(null);
+          setAdminSessionExpiresAt(null);
+          setAdminGamesResponse(null);
+          setAdminError("Admin session expired. Sign in again.");
+          return false;
+        }
+        if (!response.ok) {
+          setAdminError(getApiErrorMessage(payload, "Failed to load admin games."));
+          return false;
+        }
+        setAdminGamesResponse(payload as AdminGamesResponse);
+        return true;
+      } catch {
+        setAdminError("Failed to load admin games.");
+        return false;
+      } finally {
+        setAdminGamesLoading(false);
+      }
+    },
+    []
+  );
+
+  const fetchAdminGames = useCallback(async (): Promise<boolean> => {
+    if (!adminSessionToken) return false;
+    return fetchAdminGamesForToken(adminSessionToken);
+  }, [adminSessionToken, fetchAdminGamesForToken]);
+
+  const handleAdminLogin = useCallback(async () => {
+    const tokenDraft = adminTokenDraft.trim();
+    if (!tokenDraft) return;
+
+    setAdminLoginLoading(true);
+    setAdminError(null);
+    setAdminStatusMessage(null);
+    try {
+      const response = await fetch(`${SERVER_URL}/admin/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ token: tokenDraft })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        if (response.status === 404) {
+          setAdminError("Admin mode is disabled on this server.");
+          return;
+        }
+        setAdminError(getApiErrorMessage(payload, "Admin login failed."));
+        return;
+      }
+
+      const login = payload as AdminLoginResponse;
+      if (typeof login?.token !== "string" || typeof login?.expiresAt !== "number") {
+        setAdminError("Admin login response was invalid.");
+        return;
+      }
+
+      setAdminSessionToken(login.token);
+      setAdminSessionExpiresAt(login.expiresAt);
+      setAdminTokenDraft("");
+      setAdminStatusMessage("Admin session active.");
+      await fetchAdminGamesForToken(login.token);
+    } catch {
+      setAdminError("Admin login failed.");
+    } finally {
+      setAdminLoginLoading(false);
+    }
+  }, [adminTokenDraft, fetchAdminGamesForToken]);
+
+  const handleAdminLogout = useCallback(() => {
+    setAdminSessionToken(null);
+    setAdminSessionExpiresAt(null);
+    setAdminGamesResponse(null);
+    setAdminError(null);
+    setAdminStatusMessage("Signed out of admin mode.");
+  }, []);
+
+  const handleAdminEndGame = useCallback(
+    async (gameSummary: AdminGameSummary) => {
+      if (!adminSessionToken) return;
+
+      setAdminEndingRoomId(gameSummary.roomId);
+      setAdminError(null);
+      setAdminStatusMessage(null);
+
+      const sendEndRequest = async (acknowledgeOnlinePlayers: boolean) => {
+        const response = await fetch(`${SERVER_URL}/admin/games/${encodeURIComponent(gameSummary.roomId)}/end`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${adminSessionToken}`
+          },
+          body: JSON.stringify({ acknowledgeOnlinePlayers })
+        });
+        const payload = await readJsonResponse(response);
+        return { response, payload };
+      };
+
+      try {
+        const initial = await sendEndRequest(false);
+        if (initial.response.status === 401) {
+          setAdminSessionToken(null);
+          setAdminSessionExpiresAt(null);
+          setAdminGamesResponse(null);
+          setAdminError("Admin session expired. Sign in again.");
+          return;
+        }
+
+        if (initial.response.status === 409 && isAdminEndGameWarningResponse(initial.payload)) {
+          const onlinePlayersText =
+            initial.payload.onlinePlayers.length > 0
+              ? initial.payload.onlinePlayers.map((player) => player.name).join(", ")
+              : "Unknown player";
+          const confirmed = window.confirm(
+            `${initial.payload.message}\nOnline players: ${onlinePlayersText}\nEnd the game now?`
+          );
+          if (!confirmed) {
+            setAdminStatusMessage("End game canceled.");
+            return;
+          }
+
+          const confirmedResult = await sendEndRequest(true);
+          if (confirmedResult.response.status === 401) {
+            setAdminSessionToken(null);
+            setAdminSessionExpiresAt(null);
+            setAdminGamesResponse(null);
+            setAdminError("Admin session expired. Sign in again.");
+            return;
+          }
+          if (!confirmedResult.response.ok) {
+            setAdminError(getApiErrorMessage(confirmedResult.payload, "Failed to end game."));
+            return;
+          }
+        } else if (!initial.response.ok) {
+          setAdminError(getApiErrorMessage(initial.payload, "Failed to end game."));
+          return;
+        }
+
+        setAdminStatusMessage(`Ended game "${gameSummary.roomName}".`);
+        await fetchAdminGames();
+      } catch {
+        setAdminError("Failed to end game.");
+      } finally {
+        setAdminEndingRoomId(null);
+      }
+    },
+    [adminSessionToken, fetchAdminGames]
+  );
+
+  const handleAdminRedisCleanup = useCallback(async () => {
+    if (!adminSessionToken) return;
+    const confirmed = window.confirm(
+      "Delete the Redis snapshot key for persisted game state? This does not end active in-memory games."
+    );
+    if (!confirmed) return;
+
+    setAdminCleanupLoading(true);
+    setAdminError(null);
+    setAdminStatusMessage(null);
+    try {
+      const response = await fetch(`${SERVER_URL}/admin/redis/cleanup`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${adminSessionToken}`
+        }
+      });
+      const payload = await readJsonResponse(response);
+      if (response.status === 401) {
+        setAdminSessionToken(null);
+        setAdminSessionExpiresAt(null);
+        setAdminGamesResponse(null);
+        setAdminError("Admin session expired. Sign in again.");
+        return;
+      }
+      if (!response.ok) {
+        setAdminError(getApiErrorMessage(payload, "Redis cleanup failed."));
+        return;
+      }
+
+      const cleanupPayload = payload as { deleted?: boolean; deletedCount?: number; key?: string };
+      const keyLabel = typeof cleanupPayload.key === "string" ? cleanupPayload.key : "state key";
+      const deletedCount = typeof cleanupPayload.deletedCount === "number" ? cleanupPayload.deletedCount : 0;
+      if (cleanupPayload.deleted === true || deletedCount > 0) {
+        setAdminStatusMessage(`Deleted Redis snapshot key "${keyLabel}".`);
+      } else {
+        setAdminStatusMessage(`Redis snapshot key "${keyLabel}" was already absent.`);
+      }
+    } catch {
+      setAdminError("Redis cleanup failed.");
+    } finally {
+      setAdminCleanupLoading(false);
+    }
+  }, [adminSessionToken]);
+
+  useEffect(() => {
+    if (!adminSessionToken || !adminSessionExpiresAt) return;
+    const remainingMs = adminSessionExpiresAt - Date.now();
+    if (remainingMs <= 0) {
+      setAdminSessionToken(null);
+      setAdminSessionExpiresAt(null);
+      setAdminGamesResponse(null);
+      setAdminError("Admin session expired. Sign in again.");
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setAdminSessionToken(null);
+      setAdminSessionExpiresAt(null);
+      setAdminGamesResponse(null);
+      setAdminError("Admin session expired. Sign in again.");
+    }, remainingMs + 100);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [adminSessionToken, adminSessionExpiresAt]);
+
+  useEffect(() => {
+    if (!isAdminPanelOpen || !adminSessionToken) return;
+    void fetchAdminGames();
+    const intervalId = window.setInterval(() => {
+      void fetchAdminGames();
+    }, ADMIN_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isAdminPanelOpen, adminSessionToken, fetchAdminGames]);
+
   const handleCreate = () => {
     if (!playerName) return;
     if (practiceState.active) return;
@@ -1303,6 +1591,18 @@ export default function App() {
   const handleStart = () => {
     if (!roomState) return;
     socket.emit("room:start", { roomId: roomState.id });
+  };
+
+  const handleOpenAdminPanel = () => {
+    setAdminError(null);
+    setAdminStatusMessage(null);
+    setIsAdminPanelOpen(true);
+  };
+
+  const handleCloseAdminPanel = () => {
+    setAdminError(null);
+    setAdminStatusMessage(null);
+    setIsAdminPanelOpen(false);
   };
 
   const handleStartPractice = () => {
@@ -2679,6 +2979,9 @@ export default function App() {
           <div className="status">
             <div className="status-identity">
               <span className="status-name">{playerName}</span>
+              <button className="button-secondary admin-open-button" onClick={handleOpenAdminPanel}>
+                Admin
+              </button>
               <button className="icon-button" onClick={handleOpenSettings} aria-label="Open settings">
                 ⚙
               </button>
@@ -3638,6 +3941,140 @@ export default function App() {
                 Start practice
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {isAdminPanelOpen && (
+        <div className="join-overlay">
+          <div className="panel join-modal admin-modal" role="dialog" aria-modal="true">
+            <div className="admin-modal-header">
+              <h2>Admin Mode</h2>
+              <button className="button-secondary" onClick={handleCloseAdminPanel}>
+                Close
+              </button>
+            </div>
+            {!adminSessionToken ? (
+              <div className="admin-login">
+                <p className="muted">
+                  Enter your admin token. Session is stored in memory only and expires automatically.
+                </p>
+                <label>
+                  Admin token
+                  <input
+                    type="password"
+                    value={adminTokenDraft}
+                    onChange={(event) => setAdminTokenDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                        event.preventDefault();
+                        void handleAdminLogin();
+                      }
+                    }}
+                    placeholder="Paste admin token"
+                    autoFocus
+                  />
+                </label>
+                <div className="button-row">
+                  <button
+                    onClick={() => {
+                      void handleAdminLogin();
+                    }}
+                    disabled={!adminTokenDraft.trim() || adminLoginLoading}
+                  >
+                    {adminLoginLoading ? "Signing in..." : "Sign in"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="admin-content">
+                <p className="muted">Session expires: {formatDateTime(adminSessionExpiresAt)}</p>
+                <div className="button-row">
+                  <button
+                    className="button-secondary"
+                    onClick={() => {
+                      void fetchAdminGames();
+                    }}
+                    disabled={adminGamesLoading}
+                  >
+                    {adminGamesLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <button
+                    className="button-secondary"
+                    onClick={() => {
+                      void handleAdminRedisCleanup();
+                    }}
+                    disabled={adminCleanupLoading}
+                  >
+                    {adminCleanupLoading ? "Cleaning..." : "Clean Redis Snapshot"}
+                  </button>
+                  <button className="button-secondary" onClick={handleAdminLogout}>
+                    Sign out
+                  </button>
+                </div>
+
+                <h3>All Active Games</h3>
+                <div className="admin-games-list">
+                  {adminGames.length === 0 && <p className="muted">No active games.</p>}
+                  {adminGames.map((summary) => (
+                    <div key={summary.roomId} className="admin-game-card">
+                      <div className="admin-game-top">
+                        <div>
+                          <strong>{summary.roomName}</strong>
+                          <div className="muted">
+                            {summary.roomId} • {summary.isPublic ? "public" : "private"}
+                          </div>
+                        </div>
+                        <div className="admin-game-badges">
+                          <span className="badge">{summary.roomStatus}</span>
+                          {summary.stuck && <span className="badge badge-stuck">stuck</span>}
+                          {summary.allPlayersOffline && <span className="badge">all players offline</span>}
+                        </div>
+                      </div>
+                      <div className="muted admin-game-meta">
+                        Players online: {summary.onlinePlayerCount}/{summary.playerCount} • Spectators online:{" "}
+                        {summary.onlineSpectatorCount}/{summary.spectatorCount}
+                      </div>
+                      <div className="muted admin-game-meta">
+                        Bag: {summary.bagCount ?? "n/a"} • Center: {summary.centerTileCount ?? "n/a"} • Last
+                        activity: {formatDateTime(summary.lastActivityAt)}
+                      </div>
+                      <div className="button-row">
+                        <button
+                          className="button-danger"
+                          onClick={() => {
+                            void handleAdminEndGame(summary);
+                          }}
+                          disabled={summary.gameStatus !== "in-game" || adminEndingRoomId === summary.roomId}
+                        >
+                          {adminEndingRoomId === summary.roomId ? "Ending..." : "End Game"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <h3>All Players Offline</h3>
+                <div className="admin-games-list">
+                  {adminOfflineGames.length === 0 && <p className="muted">No games with all players offline.</p>}
+                  {adminOfflineGames.map((summary) => (
+                    <div key={`offline-${summary.roomId}`} className="admin-game-card">
+                      <strong>{summary.roomName}</strong>
+                      <div className="muted">
+                        {summary.roomId} • {summary.gameStatus ?? summary.roomStatus} • Last activity:{" "}
+                        {formatDateTime(summary.lastActivityAt)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {adminError && (
+              <div className="practice-editor-error" role="alert">
+                {adminError}
+              </div>
+            )}
+            {adminStatusMessage && <div className="admin-status-message">{adminStatusMessage}</div>}
           </div>
         </div>
       )}

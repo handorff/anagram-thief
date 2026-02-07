@@ -1,12 +1,16 @@
 import cors from "cors";
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { createServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import type {
+  AdminEndGameWarningResponse,
+  AdminGameSummary,
+  AdminGamesResponse,
+  AdminLoginResponse,
   ClaimEventMeta,
   GameReplay,
   ReplayAnalysisBasis,
@@ -109,6 +113,7 @@ const io = new Server(httpServer, {
 type GameStateInternal = {
   roomId: string;
   status: "in-game" | "ended";
+  lastActivityAt: number;
   bag: Tile[];
   centerTiles: Tile[];
   players: Player[];
@@ -171,6 +176,7 @@ type PersistedRoomState = RoomState & { maxPlayers?: number };
 type PersistedGameState = {
   roomId: string;
   status: "in-game" | "ended";
+  lastActivityAt?: number;
   bag: Tile[];
   centerTiles: Tile[];
   players: Player[];
@@ -228,6 +234,215 @@ if ((UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_TOKEN) && !redisPersistenceEna
   console.warn(
     "[persistence] Redis persistence disabled. Set both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN."
   );
+}
+
+const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 900;
+const DEFAULT_ADMIN_STUCK_THRESHOLD_MINUTES = 10;
+const ADMIN_LOGIN_MAX_ATTEMPTS = 5;
+const ADMIN_LOGIN_WINDOW_MS = 5 * 60_000;
+const ADMIN_LOGIN_BLOCK_MS = 10 * 60_000;
+
+type AdminSessionPayload = {
+  sid: string;
+  iat: number;
+  exp: number;
+};
+
+type AdminLoginAttemptState = {
+  windowStartedAt: number;
+  failures: number;
+  blockedUntil: number | null;
+};
+
+const adminLoginAttemptsByIp = new Map<string, AdminLoginAttemptState>();
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (Number.isNaN(value)) return min;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function parseIntegerEnv(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return clampInteger(parsed, min, max);
+}
+
+function getAdminModeToken(): string {
+  return process.env.ADMIN_MODE_TOKEN?.trim() ?? "";
+}
+
+function getAdminSessionSigningSecret(): string {
+  return process.env.ADMIN_SESSION_SIGNING_SECRET?.trim() || getAdminModeToken();
+}
+
+function getAdminSessionTtlSeconds(): number {
+  return parseIntegerEnv(
+    process.env.ADMIN_SESSION_TTL_SECONDS,
+    DEFAULT_ADMIN_SESSION_TTL_SECONDS,
+    60,
+    86_400
+  );
+}
+
+function getAdminStuckThresholdMinutes(): number {
+  return parseIntegerEnv(
+    process.env.ADMIN_STUCK_THRESHOLD_MINUTES,
+    DEFAULT_ADMIN_STUCK_THRESHOLD_MINUTES,
+    1,
+    1_440
+  );
+}
+
+function isAdminModeEnabled(): boolean {
+  return Boolean(getAdminModeToken());
+}
+
+function getRequesterIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0 && forwarded[0]?.trim()) {
+    return forwarded[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function parseBearerToken(authorizationHeader: string | undefined): string | null {
+  if (!authorizationHeader) return null;
+  const [scheme, token] = authorizationHeader.split(" ");
+  if (!scheme || !token) return null;
+  if (scheme.toLowerCase() !== "bearer") return null;
+  return token.trim() || null;
+}
+
+function constantTimeEqualStrings(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  if (leftBuffer.length !== rightBuffer.length) {
+    const maxLength = Math.max(leftBuffer.length, rightBuffer.length, 1);
+    const leftPadded = Buffer.alloc(maxLength);
+    const rightPadded = Buffer.alloc(maxLength);
+    leftBuffer.copy(leftPadded);
+    rightBuffer.copy(rightPadded);
+    timingSafeEqual(leftPadded, rightPadded);
+    return false;
+  }
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function base64UrlEncodeUtf8(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function base64UrlDecodeUtf8(value: string): string {
+  return Buffer.from(value, "base64url").toString("utf8");
+}
+
+function signAdminSessionPayload(encodedPayload: string, signingSecret: string): string {
+  return createHmac("sha256", signingSecret).update(encodedPayload).digest("base64url");
+}
+
+function createAdminSessionToken(nowMs = Date.now()): AdminLoginResponse {
+  const issuedAtSeconds = Math.floor(nowMs / 1000);
+  const ttlSeconds = getAdminSessionTtlSeconds();
+  const payload: AdminSessionPayload = {
+    sid: randomUUID(),
+    iat: issuedAtSeconds,
+    exp: issuedAtSeconds + ttlSeconds
+  };
+  const encodedPayload = base64UrlEncodeUtf8(JSON.stringify(payload));
+  const signature = signAdminSessionPayload(encodedPayload, getAdminSessionSigningSecret());
+  return {
+    token: `${encodedPayload}.${signature}`,
+    expiresAt: payload.exp * 1000
+  };
+}
+
+function parseAdminSessionPayload(value: unknown): AdminSessionPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<AdminSessionPayload>;
+  const sid = candidate.sid;
+  const iat = candidate.iat;
+  const exp = candidate.exp;
+  if (typeof sid !== "string" || !sid.trim()) return null;
+  if (typeof iat !== "number" || !Number.isInteger(iat)) return null;
+  if (typeof exp !== "number" || !Number.isInteger(exp)) return null;
+  if (exp <= iat) return null;
+  return {
+    sid,
+    iat,
+    exp
+  };
+}
+
+function verifyAdminSessionToken(token: string, nowMs = Date.now()): AdminSessionPayload | null {
+  const [encodedPayload, providedSignature] = token.split(".");
+  if (!encodedPayload || !providedSignature) return null;
+  if (token.split(".").length !== 2) return null;
+
+  const signingSecret = getAdminSessionSigningSecret();
+  if (!signingSecret) return null;
+  const expectedSignature = signAdminSessionPayload(encodedPayload, signingSecret);
+  if (!constantTimeEqualStrings(expectedSignature, providedSignature)) {
+    return null;
+  }
+
+  let parsedPayload: unknown;
+  try {
+    parsedPayload = JSON.parse(base64UrlDecodeUtf8(encodedPayload));
+  } catch {
+    return null;
+  }
+
+  const payload = parseAdminSessionPayload(parsedPayload);
+  if (!payload) return null;
+  if (payload.exp * 1000 <= nowMs) return null;
+  return payload;
+}
+
+function getAdminLoginAttemptState(ip: string, now: number): AdminLoginAttemptState {
+  const existing = adminLoginAttemptsByIp.get(ip);
+  if (!existing) {
+    const created: AdminLoginAttemptState = {
+      windowStartedAt: now,
+      failures: 0,
+      blockedUntil: null
+    };
+    adminLoginAttemptsByIp.set(ip, created);
+    return created;
+  }
+
+  if (now - existing.windowStartedAt > ADMIN_LOGIN_WINDOW_MS) {
+    existing.windowStartedAt = now;
+    existing.failures = 0;
+    existing.blockedUntil = null;
+  }
+  return existing;
+}
+
+function isAdminLoginBlocked(ip: string, now: number): boolean {
+  const state = getAdminLoginAttemptState(ip, now);
+  if (!state.blockedUntil) return false;
+  if (state.blockedUntil <= now) {
+    state.blockedUntil = null;
+    state.failures = 0;
+    state.windowStartedAt = now;
+    return false;
+  }
+  return true;
+}
+
+function registerAdminLoginFailure(ip: string, now: number) {
+  const state = getAdminLoginAttemptState(ip, now);
+  state.failures += 1;
+  if (state.failures >= ADMIN_LOGIN_MAX_ATTEMPTS) {
+    state.blockedUntil = now + ADMIN_LOGIN_BLOCK_MS;
+  }
+}
+
+function clearAdminLoginFailures(ip: string) {
+  adminLoginAttemptsByIp.delete(ip);
 }
 
 function createInactivePracticeState(
@@ -458,6 +673,7 @@ function toPersistedGameState(game: GameStateInternal): PersistedGameState {
   return clone({
     roomId: game.roomId,
     status: game.status,
+    lastActivityAt: game.lastActivityAt,
     bag: game.bag,
     centerTiles: game.centerTiles,
     players: game.players,
@@ -548,6 +764,23 @@ async function upstashSetValue(key: string, value: string): Promise<void> {
   if (payload.error) {
     throw new Error(`SET ${endpoint} returned error: ${payload.error}`);
   }
+}
+
+async function upstashDeleteKey(key: string): Promise<number> {
+  if (!redisPersistenceEnabled) return 0;
+  const endpoint = `${UPSTASH_REDIS_REST_URL}/del/${encodeURIComponent(key)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: getUpstashHeaders()
+  });
+  if (!response.ok) {
+    throw new Error(`DEL ${endpoint} failed with status ${response.status}`);
+  }
+  const payload = (await response.json()) as { result?: unknown; error?: string };
+  if (payload.error) {
+    throw new Error(`DEL ${endpoint} returned error: ${payload.error}`);
+  }
+  return typeof payload.result === "number" ? payload.result : 0;
 }
 
 async function persistSnapshotNow() {
@@ -834,6 +1067,10 @@ function buildGameStateForViewer(
     lastClaimEvent: game.lastClaimEvent,
     replay: game.status === "ended" ? game.replay : null
   };
+}
+
+function touchGameActivity(game: Pick<GameStateInternal, "lastActivityAt">, at: number = Date.now()) {
+  game.lastActivityAt = at;
 }
 
 function emitGameState(roomId: string, replayStepKind?: ReplayStepKind) {
@@ -1130,6 +1367,7 @@ function executeClaim(
   revalidateAllPreStealEntries(game);
 
   game.lastClaimAt = now;
+  touchGameActivity(game, now);
   game.lastClaimEvent = {
     eventId: randomUUID(),
     wordId: newWord.id,
@@ -1279,11 +1517,15 @@ function emitErrorToPlayer(playerId: string, message: string) {
 }
 
 function clearClaimWindow(game: GameStateInternal) {
+  const hadClaimWindow = Boolean(game.claimWindow);
   if (game.claimWindowTimeout) {
     clearTimeout(game.claimWindowTimeout);
     game.claimWindowTimeout = undefined;
   }
   game.claimWindow = null;
+  if (hadClaimWindow) {
+    touchGameActivity(game);
+  }
 }
 
 function clearGameTimers(game: GameStateInternal) {
@@ -1366,6 +1608,7 @@ function openClaimWindow(game: GameStateInternal, playerId: string) {
   const durationMs = game.claimTimer.seconds * 1000;
   const endsAt = Date.now() + durationMs;
   game.claimWindow = { playerId, endsAt, token };
+  touchGameActivity(game);
   scheduleClaimWindowTimeout(game, game.claimWindow);
 }
 
@@ -1435,6 +1678,7 @@ function revealPendingFlip(game: GameStateInternal, token: string): boolean {
   const tile = game.bag.shift();
   if (!tile) return false;
   game.centerTiles.push(tile);
+  touchGameActivity(game);
   game.lastClaimEvent = null;
   appendReplayStepIfChanged(game, "flip-revealed");
 
@@ -1665,6 +1909,10 @@ function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal 
   return {
     roomId: persistedGame.roomId,
     status: persistedGame.status,
+    lastActivityAt:
+      typeof persistedGame.lastActivityAt === "number"
+        ? persistedGame.lastActivityAt
+        : persistedGame.lastClaimAt ?? Date.now(),
     bag: clone(persistedGame.bag),
     centerTiles: clone(persistedGame.centerTiles),
     players: clone(persistedGame.players).map((player) => ({
@@ -1843,6 +2091,197 @@ async function hydrateStateFromRedis() {
     scheduleStatePersist();
   }
 }
+
+function buildAdminGameSummary(
+  room: RoomState,
+  game: GameStateInternal | undefined,
+  now: number,
+  stuckThresholdMs: number
+): AdminGameSummary {
+  const onlinePlayerCount = room.players.filter((player) => player.connected).length;
+  const spectatorCount = room.spectators.length;
+  const onlineSpectatorCount = room.spectators.filter((spectator) => spectator.connected).length;
+  const hasLiveGame = Boolean(game && game.status === "in-game");
+  const lastActivityAt = hasLiveGame ? game!.lastActivityAt : null;
+  const stuck =
+    hasLiveGame &&
+    typeof lastActivityAt === "number" &&
+    now - lastActivityAt > stuckThresholdMs;
+
+  return {
+    roomId: room.id,
+    roomName: room.name,
+    isPublic: room.isPublic,
+    roomStatus: room.status,
+    gameStatus: game?.status ?? null,
+    createdAt: room.createdAt,
+    playerCount: room.players.length,
+    onlinePlayerCount,
+    offlinePlayerCount: room.players.length - onlinePlayerCount,
+    spectatorCount,
+    onlineSpectatorCount,
+    allPlayersOffline: room.players.length > 0 && onlinePlayerCount === 0,
+    hasLiveGame,
+    bagCount: hasLiveGame ? game!.bag.length : null,
+    centerTileCount: hasLiveGame ? game!.centerTiles.length : null,
+    turnPlayerId: hasLiveGame ? game!.turnPlayerId : null,
+    claimWindowEndsAt: hasLiveGame ? game!.claimWindow?.endsAt ?? null : null,
+    pendingFlipRevealsAt: hasLiveGame ? game!.pendingFlip?.revealsAt ?? null : null,
+    endTimerEndsAt: hasLiveGame ? game!.endTimerEndsAt ?? null : null,
+    lastActivityAt,
+    stuck
+  };
+}
+
+function buildAdminGamesResponse(now: number = Date.now()): AdminGamesResponse {
+  const stuckThresholdMinutes = getAdminStuckThresholdMinutes();
+  const stuckThresholdMs = stuckThresholdMinutes * 60_000;
+  const gamesForAdmin = Array.from(rooms.values())
+    .filter((room) => room.status !== "ended")
+    .map((room) => buildAdminGameSummary(room, games.get(room.id), now, stuckThresholdMs))
+    .sort((left, right) => right.createdAt - left.createdAt);
+
+  return {
+    generatedAt: now,
+    stuckThresholdMinutes,
+    games: gamesForAdmin,
+    offlineGames: gamesForAdmin.filter((summary) => summary.allPlayersOffline)
+  };
+}
+
+type AdminAuthedRequest = Request & { adminSession?: AdminSessionPayload };
+
+function requireAdmin(req: Request, res: Response, next?: NextFunction) {
+  if (!isAdminModeEnabled()) {
+    res.status(404).json({ message: "Not found." });
+    return;
+  }
+
+  const token = parseBearerToken(req.header("authorization"));
+  if (!token) {
+    res.status(401).json({ message: "Unauthorized." });
+    return;
+  }
+
+  const adminSession = verifyAdminSessionToken(token);
+  if (!adminSession) {
+    res.status(401).json({ message: "Unauthorized." });
+    return;
+  }
+
+  (req as AdminAuthedRequest).adminSession = adminSession;
+  if (next) {
+    next();
+  }
+}
+
+app.post("/admin/login", (req, res) => {
+  if (!isAdminModeEnabled()) {
+    res.status(404).json({ message: "Not found." });
+    return;
+  }
+
+  const requesterIp = getRequesterIp(req);
+  const now = Date.now();
+  if (isAdminLoginBlocked(requesterIp, now)) {
+    res.status(429).json({ message: "Too many attempts. Try again later." });
+    return;
+  }
+
+  const adminModeToken = getAdminModeToken();
+  const body = req.body as { token?: unknown } | undefined;
+  const providedToken = typeof body?.token === "string" ? body.token : "";
+  if (!providedToken || !constantTimeEqualStrings(providedToken, adminModeToken)) {
+    registerAdminLoginFailure(requesterIp, now);
+    console.warn(`[admin] Failed login attempt from ${requesterIp}`);
+    res.status(401).json({ message: "Unauthorized." });
+    return;
+  }
+
+  clearAdminLoginFailures(requesterIp);
+  const session = createAdminSessionToken(now);
+  console.info(`[admin] Successful login from ${requesterIp}`);
+  res.json(session);
+});
+
+app.get("/admin/games", requireAdmin, (_req, res) => {
+  res.json(buildAdminGamesResponse());
+});
+
+app.post("/admin/games/:roomId/end", requireAdmin, (req, res) => {
+  const roomId = typeof req.params.roomId === "string" ? req.params.roomId.trim() : "";
+  if (!roomId) {
+    res.status(400).json({ message: "Room id is required." });
+    return;
+  }
+
+  const room = rooms.get(roomId);
+  const game = games.get(roomId);
+  if (!room || !game || room.status === "ended") {
+    res.status(404).json({ message: "Game not found." });
+    return;
+  }
+  if (game.status !== "in-game") {
+    res.status(400).json({ message: "Game is not in progress." });
+    return;
+  }
+
+  const acknowledgeOnlinePlayers =
+    (req.body as { acknowledgeOnlinePlayers?: unknown } | undefined)?.acknowledgeOnlinePlayers === true;
+  const onlinePlayers = game.players
+    .filter((player) => player.connected)
+    .map((player) => ({ id: player.id, name: player.name }));
+
+  if (onlinePlayers.length > 0 && !acknowledgeOnlinePlayers) {
+    const warning: AdminEndGameWarningResponse = {
+      ok: false,
+      roomId,
+      requiresAcknowledgement: true,
+      onlinePlayers,
+      message: "This game has online players. Confirm to end it."
+    };
+    res.status(409).json(warning);
+    return;
+  }
+
+  finalizeEndedGame(roomId);
+  res.json({
+    ok: true,
+    roomId,
+    endedAt: Date.now()
+  });
+});
+
+app.post("/admin/redis/cleanup", requireAdmin, async (_req, res) => {
+  if (!redisPersistenceEnabled) {
+    res.status(400).json({
+      ok: false,
+      message: "Redis persistence is not enabled.",
+      redisPersistenceEnabled: false,
+      key: UPSTASH_STATE_KEY
+    });
+    return;
+  }
+
+  try {
+    const deletedCount = await upstashDeleteKey(UPSTASH_STATE_KEY);
+    res.json({
+      ok: true,
+      redisPersistenceEnabled: true,
+      key: UPSTASH_STATE_KEY,
+      deleted: deletedCount > 0,
+      deletedCount
+    });
+  } catch (error) {
+    console.error("[admin] Failed to clean up Redis snapshot key", error);
+    res.status(500).json({
+      ok: false,
+      message: "Failed to clean up Redis snapshot key.",
+      redisPersistenceEnabled: true,
+      key: UPSTASH_STATE_KEY
+    });
+  }
+});
 
 io.on("connection", (socket) => {
   const socketData = getSocketData(socket);
@@ -2547,10 +2986,12 @@ io.on("connection", (socket) => {
     const claimTimer = room.claimTimer ?? {
       seconds: DEFAULT_CLAIM_TIMER_SECONDS
     };
+    const now = Date.now();
 
     const game: GameStateInternal = {
       roomId: room.id,
       status: "in-game",
+      lastActivityAt: now,
       bag,
       centerTiles: [],
       players,
@@ -2708,6 +3149,7 @@ io.on("connection", (socket) => {
         }
 
         player.preStealEntries.push(entry);
+        touchGameActivity(game);
         emitGameState(roomId);
       });
     }
@@ -2749,6 +3191,7 @@ io.on("connection", (socket) => {
           return;
         }
         player.preStealEntries = nextEntries;
+        touchGameActivity(game);
         emitGameState(roomId);
       });
     }
@@ -2811,6 +3254,7 @@ io.on("connection", (socket) => {
         player.preStealEntries = orderedEntryIds
           .map((entryId) => entriesById.get(entryId))
           .filter((entry): entry is PreStealEntry => Boolean(entry));
+        touchGameActivity(game);
         emitGameState(roomId);
       });
     }
@@ -2982,14 +3426,20 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 export {
+  app,
+  httpServer,
   analyzeReplayStep,
+  buildAdminGameSummary,
+  buildAdminGamesResponse,
   buildPracticePuzzleFromReplayState,
   buildGameStateForViewer,
   buildReplaySnapshot,
+  createAdminSessionToken,
   appendReplayStepIfChanged,
   hydrateGameState,
   resolveReplayAnalysisBasisStep,
   toPersistedGameState,
+  verifyAdminSessionToken,
   areLetterCountsEqual,
   countLetters,
   entryMatchesExistingWord,
