@@ -859,6 +859,11 @@ export default function App() {
   );
   const isTileInputMethodEnabled = userSettingsContextValue.isTileInputMethodEnabled;
 
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", userSettings.theme);
+    document.documentElement.style.colorScheme = userSettings.theme;
+  }, [userSettings.theme]);
+
   const endTimerRemaining = useMemo(() => {
     if (!gameState?.endTimerEndsAt) return null;
     const remaining = Math.max(0, Math.ceil((gameState.endTimerEndsAt - now) / 1000));
@@ -3671,6 +3676,24 @@ export default function App() {
                 />
                 <span>
                   <strong>Enable click/tap letter tiles</strong>
+                </span>
+              </label>
+            </div>
+            <div className="settings-section">
+              <span>Appearance</span>
+              <label className="settings-option">
+                <input
+                  type="checkbox"
+                  checked={userSettingsDraft.theme === "dark"}
+                  onChange={(event) =>
+                    setUserSettingsDraft((current) => ({
+                      ...current,
+                      theme: event.target.checked ? "dark" : "light"
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Dark mode</strong>
                 </span>
               </label>
             </div>

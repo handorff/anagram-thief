@@ -3,17 +3,24 @@ import { createContext, useContext } from "react";
 const USER_SETTINGS_STORAGE_KEY = "anagram.userSettings";
 
 export type InputMethodSetting = "typing" | "tile";
+export type ThemeSetting = "light" | "dark";
 
 export type UserSettings = {
   inputMethod: InputMethodSetting;
+  theme: ThemeSetting;
 };
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
-  inputMethod: "typing"
+  inputMethod: "typing",
+  theme: "light"
 };
 
 function normalizeInputMethodSetting(value: unknown): InputMethodSetting {
   return value === "tile" ? "tile" : "typing";
+}
+
+function normalizeThemeSetting(value: unknown): ThemeSetting {
+  return value === "dark" ? "dark" : "light";
 }
 
 function normalizeUserSettings(value: unknown): UserSettings {
@@ -23,7 +30,8 @@ function normalizeUserSettings(value: unknown): UserSettings {
 
   const candidate = value as Partial<UserSettings>;
   return {
-    inputMethod: normalizeInputMethodSetting(candidate.inputMethod)
+    inputMethod: normalizeInputMethodSetting(candidate.inputMethod),
+    theme: normalizeThemeSetting(candidate.theme)
   };
 }
 
@@ -52,11 +60,13 @@ export function persistUserSettings(settings: UserSettings) {
 export type UserSettingsContextValue = {
   settings: UserSettings;
   isTileInputMethodEnabled: boolean;
+  isDarkMode: boolean;
 };
 
 export const UserSettingsContext = createContext<UserSettingsContextValue>({
   settings: DEFAULT_USER_SETTINGS,
-  isTileInputMethodEnabled: false
+  isTileInputMethodEnabled: false,
+  isDarkMode: false
 });
 
 export function useUserSettings() {
@@ -66,6 +76,7 @@ export function useUserSettings() {
 export function buildUserSettingsContextValue(settings: UserSettings): UserSettingsContextValue {
   return {
     settings,
-    isTileInputMethodEnabled: settings.inputMethod === "tile"
+    isTileInputMethodEnabled: settings.inputMethod === "tile",
+    isDarkMode: settings.theme === "dark"
   };
 }
