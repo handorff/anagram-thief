@@ -592,6 +592,12 @@ function buildPracticeSharePayloadFromReplayState(state: ReplayStateSnapshot): P
 }
 
 export default function App() {
+  const [currentPath, setCurrentPath] = useState(() => {
+    if (typeof window === "undefined") return "/";
+    return window.location.pathname;
+  });
+  const isAdminPath = currentPath === "/admin" || currentPath === "/admin/";
+
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [selfPlayerId, setSelfPlayerId] = useState<string | null>(null);
   const [roomList, setRoomList] = useState<RoomSummary[]>([]);
@@ -633,7 +639,6 @@ export default function App() {
   const [userSettingsDraft, setUserSettingsDraft] = useState<UserSettings>(() => readStoredUserSettings());
   const [lobbyView, setLobbyView] = useState<"list" | "create" | "editor">("list");
   const [lobbyError, setLobbyError] = useState<string | null>(null);
-  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const [adminTokenDraft, setAdminTokenDraft] = useState("");
   const [adminSessionToken, setAdminSessionToken] = useState<string | null>(null);
   const [adminSessionExpiresAt, setAdminSessionExpiresAt] = useState<number | null>(null);
@@ -1517,6 +1522,17 @@ export default function App() {
   }, [adminSessionToken]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!adminSessionToken || !adminSessionExpiresAt) return;
     const remainingMs = adminSessionExpiresAt - Date.now();
     if (remainingMs <= 0) {
@@ -1538,7 +1554,7 @@ export default function App() {
   }, [adminSessionToken, adminSessionExpiresAt]);
 
   useEffect(() => {
-    if (!isAdminPanelOpen || !adminSessionToken) return;
+    if (!isAdminPath || !adminSessionToken) return;
     void fetchAdminGames();
     const intervalId = window.setInterval(() => {
       void fetchAdminGames();
@@ -1546,7 +1562,7 @@ export default function App() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isAdminPanelOpen, adminSessionToken, fetchAdminGames]);
+  }, [isAdminPath, adminSessionToken, fetchAdminGames]);
 
   const handleCreate = () => {
     if (!playerName) return;
@@ -1593,16 +1609,13 @@ export default function App() {
     socket.emit("room:start", { roomId: roomState.id });
   };
 
-  const handleOpenAdminPanel = () => {
-    setAdminError(null);
-    setAdminStatusMessage(null);
-    setIsAdminPanelOpen(true);
-  };
-
   const handleCloseAdminPanel = () => {
     setAdminError(null);
     setAdminStatusMessage(null);
-    setIsAdminPanelOpen(false);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(window.history.state, "", "/");
+      setCurrentPath(window.location.pathname);
+    }
   };
 
   const handleStartPractice = () => {
@@ -2933,7 +2946,7 @@ export default function App() {
       </div>
     ) : null;
 
-  if (!playerName) {
+  if (!playerName && !isAdminPath) {
     return (
       <div className="name-gate">
         <div className="name-card">
@@ -2979,9 +2992,6 @@ export default function App() {
           <div className="status">
             <div className="status-identity">
               <span className="status-name">{playerName}</span>
-              <button className="button-secondary admin-open-button" onClick={handleOpenAdminPanel}>
-                Admin
-              </button>
               <button className="icon-button" onClick={handleOpenSettings} aria-label="Open settings">
                 ⚙
               </button>
@@ -3945,7 +3955,7 @@ export default function App() {
         </div>
       )}
 
-      {isAdminPanelOpen && (
+      {isAdminPath && (
         <div className="join-overlay">
           <div className="panel join-modal admin-modal" role="dialog" aria-modal="true">
             <div className="admin-modal-header">
@@ -4034,6 +4044,22 @@ export default function App() {
                       <div className="muted admin-game-meta">
                         Players online: {summary.onlinePlayerCount}/{summary.playerCount} • Spectators online:{" "}
                         {summary.onlineSpectatorCount}/{summary.spectatorCount}
+                      </div>
+                      <div className="muted admin-game-meta">
+                        Players:{" "}
+                        {summary.players.length > 0
+                          ? summary.players
+                              .map((player) => `${player.name}${player.connected ? "" : " (offline)"}`)
+                              .join(", ")
+                          : "none"}
+                      </div>
+                      <div className="muted admin-game-meta">
+                        Spectators:{" "}
+                        {summary.spectators.length > 0
+                          ? summary.spectators
+                              .map((spectator) => `${spectator.name}${spectator.connected ? "" : " (offline)"}`)
+                              .join(", ")
+                          : "none"}
                       </div>
                       <div className="muted admin-game-meta">
                         Bag: {summary.bagCount ?? "n/a"} • Center: {summary.centerTileCount ?? "n/a"} • Last

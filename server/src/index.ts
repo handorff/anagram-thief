@@ -104,6 +104,9 @@ app.use(express.static(clientDist));
 app.get("/", (_req, res) => {
   res.sendFile(path.join(clientDist, "index.html"));
 });
+app.get("/admin", (_req, res) => {
+  res.sendFile(path.join(clientDist, "index.html"));
+});
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -2098,9 +2101,19 @@ function buildAdminGameSummary(
   now: number,
   stuckThresholdMs: number
 ): AdminGameSummary {
-  const onlinePlayerCount = room.players.filter((player) => player.connected).length;
-  const spectatorCount = room.spectators.length;
-  const onlineSpectatorCount = room.spectators.filter((spectator) => spectator.connected).length;
+  const players = room.players.map((player) => ({
+    id: player.id,
+    name: player.name,
+    connected: player.connected
+  }));
+  const spectators = room.spectators.map((spectator) => ({
+    id: spectator.id,
+    name: spectator.name,
+    connected: spectator.connected
+  }));
+  const onlinePlayerCount = players.filter((player) => player.connected).length;
+  const spectatorCount = spectators.length;
+  const onlineSpectatorCount = spectators.filter((spectator) => spectator.connected).length;
   const hasLiveGame = Boolean(game && game.status === "in-game");
   const lastActivityAt = hasLiveGame ? game!.lastActivityAt : null;
   const stuck =
@@ -2115,12 +2128,14 @@ function buildAdminGameSummary(
     roomStatus: room.status,
     gameStatus: game?.status ?? null,
     createdAt: room.createdAt,
-    playerCount: room.players.length,
+    players,
+    spectators,
+    playerCount: players.length,
     onlinePlayerCount,
-    offlinePlayerCount: room.players.length - onlinePlayerCount,
+    offlinePlayerCount: players.length - onlinePlayerCount,
     spectatorCount,
     onlineSpectatorCount,
-    allPlayersOffline: room.players.length > 0 && onlinePlayerCount === 0,
+    allPlayersOffline: players.length > 0 && onlinePlayerCount === 0,
     hasLiveGame,
     bagCount: hasLiveGame ? game!.bag.length : null,
     centerTileCount: hasLiveGame ? game!.centerTiles.length : null,

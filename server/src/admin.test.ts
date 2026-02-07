@@ -84,8 +84,14 @@ test("buildAdminGameSummary flags private rooms, offline players, and stuck game
   assert.equal(summary.onlinePlayerCount, 0);
   assert.equal(summary.offlinePlayerCount, 2);
   assert.equal(summary.allPlayersOffline, true);
+  assert.equal(summary.players.length, 2);
+  assert.equal(summary.players[0]?.name, "Alice");
+  assert.equal(summary.players[0]?.connected, false);
   assert.equal(summary.spectatorCount, 1);
   assert.equal(summary.onlineSpectatorCount, 1);
+  assert.equal(summary.spectators.length, 1);
+  assert.equal(summary.spectators[0]?.name, "Spec");
+  assert.equal(summary.spectators[0]?.connected, true);
   assert.equal(summary.hasLiveGame, true);
   assert.equal(summary.bagCount, 1);
   assert.equal(summary.centerTileCount, 1);

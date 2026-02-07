@@ -297,6 +297,12 @@ export interface AdminOnlinePlayerSummary {
   name: string;
 }
 
+export interface AdminParticipantSummary {
+  id: string;
+  name: string;
+  connected: boolean;
+}
+
 export interface AdminEndGameWarningResponse {
   ok: false;
   roomId: string;
@@ -312,6 +318,8 @@ export interface AdminGameSummary {
   roomStatus: RoomStatus;
   gameStatus: "in-game" | "ended" | null;
   createdAt: number;
+  players: AdminParticipantSummary[];
+  spectators: AdminParticipantSummary[];
   playerCount: number;
   onlinePlayerCount: number;
   offlinePlayerCount: number;

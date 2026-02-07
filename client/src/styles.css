@@ -1489,11 +1489,6 @@ button:disabled {
   width: 6rem;
 }
 
-.admin-open-button {
-  padding: 0.3rem 0.65rem;
-  font-size: 0.8rem;
-}
-
 .admin-modal {
   width: min(960px, 96vw);
   max-height: min(86vh, 920px);
