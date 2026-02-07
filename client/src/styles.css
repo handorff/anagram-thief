@@ -831,6 +831,12 @@ button:disabled {
   background: var(--color-submitted-bg);
 }
 
+.practice-option.replay-claimed {
+  border-color: var(--color-wordle-green);
+  background: var(--color-green-bg);
+  box-shadow: inset 0 0 0 1px var(--color-wordle-green);
+}
+
 .practice-option-more {
   width: 100%;
   background: transparent;

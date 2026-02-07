@@ -480,26 +480,26 @@ function buildReplayActionText(
   }
 
   if (step.kind === "claim-succeeded") {
-    if (!previousState) {
+    const claimWordDiff = getReplayClaimWordDiff(replaySteps, stepIndex);
+    if (!claimWordDiff) {
       return "A word was claimed.";
     }
 
-    const previousWords = getWordSnapshots(previousState.players);
-    const currentWords = getWordSnapshots(currentState.players);
-    const previousWordMap = new Map(previousWords.map((word) => [word.id, word]));
-    const removedWords = previousWords.filter(
-      (word) => !currentWords.some((currentWord) => currentWord.id === word.id)
-    );
-    const addedWords = currentWords
-      .filter((word) => !previousWordMap.has(word.id))
-      .sort((a, b) => a.createdAt - b.createdAt);
+    const { currentState: claimCurrentState, addedWords, removedWords: claimRemovedWords } = claimWordDiff;
+    const removedWords = [...claimRemovedWords];
 
     const lines: string[] = [];
     for (const addedWord of addedWords) {
-      const claimantName = getPlayerName(currentState.players, addedWord.ownerId);
+      const claimantName = getPlayerName(claimCurrentState.players, addedWord.ownerId);
       const replacedWord = findReplacedWord(addedWord, removedWords);
       if (!replacedWord) {
-        lines.push(appendPreStealLogContext(`${claimantName} claimed ${addedWord.text}.`, currentState, addedWord.id));
+        lines.push(
+          appendPreStealLogContext(
+            `${claimantName} claimed ${addedWord.text}.`,
+            claimCurrentState,
+            addedWord.id
+          )
+        );
         continue;
       }
 
@@ -512,16 +512,16 @@ function buildReplayActionText(
         lines.push(
           appendPreStealLogContext(
             `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
-            currentState,
+            claimCurrentState,
             addedWord.id
           )
         );
       } else {
-        const stolenFromName = getPlayerName(currentState.players, replacedWord.ownerId);
+        const stolenFromName = getPlayerName(claimCurrentState.players, replacedWord.ownerId);
         lines.push(
           appendPreStealLogContext(
             `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
-            currentState,
+            claimCurrentState,
             addedWord.id
           )
         );
@@ -535,6 +535,39 @@ function buildReplayActionText(
   }
 
   return "Replay action.";
+}
+
+function getReplayClaimWordDiff(
+  replaySteps: NonNullable<GameState["replay"]>["steps"],
+  stepIndex: number
+): {
+  currentState: ReplayStateSnapshot;
+  addedWords: WordSnapshot[];
+  removedWords: WordSnapshot[];
+} | null {
+  const step = replaySteps[stepIndex];
+  if (!step || step.kind !== "claim-succeeded") return null;
+  if (stepIndex <= 0) return null;
+
+  const currentState = step.state;
+  const previousState = replaySteps[stepIndex - 1]?.state ?? null;
+  if (!previousState) return null;
+
+  const previousWords = getWordSnapshots(previousState.players);
+  const currentWords = getWordSnapshots(currentState.players);
+  const previousWordMap = new Map(previousWords.map((word) => [word.id, word]));
+  const removedWords = previousWords.filter(
+    (word) => !currentWords.some((currentWord) => currentWord.id === word.id)
+  );
+  const addedWords = currentWords
+    .filter((word) => !previousWordMap.has(word.id))
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  return {
+    currentState,
+    addedWords,
+    removedWords
+  };
 }
 
 function buildPracticeSharePayloadFromReplayState(state: ReplayStateSnapshot): PracticeSharePayload {
@@ -1035,6 +1068,11 @@ export default function App() {
       hiddenReplayAnalysisOptionCount: Math.max(0, activeReplayAnalysis.allOptions.length - visibleCount)
     };
   }, [activeReplayAnalysis, showAllReplayOptionsByStep]);
+  const activeReplayClaimedWords = useMemo(() => {
+    const claimWordDiff = getReplayClaimWordDiff(replaySteps, clampedReplayStepIndex);
+    if (!claimWordDiff) return new Set<string>();
+    return new Set(claimWordDiff.addedWords.map((word) => normalizeEditorText(word.text)));
+  }, [replaySteps, clampedReplayStepIndex]);
   const canExportReplay = Boolean(
     roomState?.status === "ended" && replaySource?.kind === "room" && roomReplay
   );
@@ -2600,7 +2638,7 @@ export default function App() {
                   {visibleReplayAnalysisOptions.map((option) => (
                     <div
                       key={`${activeReplayAnalysis.requestedStepIndex}-${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
-                      className="practice-option"
+                      className={getReplayPracticeOptionClassName(option, activeReplayClaimedWords)}
                     >
                       <div>
                         <strong>{formatPracticeOptionLabel(option)}</strong>
@@ -3788,6 +3826,16 @@ function getPracticeOptionClassName(
 ) {
   if (option.word === submittedWordNormalized) {
     return "practice-option submitted";
+  }
+  return "practice-option";
+}
+
+function getReplayPracticeOptionClassName(
+  option: PracticeScoredWord,
+  activeReplayClaimedWords: Set<string>
+): string {
+  if (activeReplayClaimedWords.has(normalizeEditorText(option.word))) {
+    return "practice-option replay-claimed";
   }
   return "practice-option";
 }
