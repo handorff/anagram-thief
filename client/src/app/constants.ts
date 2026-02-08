@@ -3,7 +3,7 @@ import type { PracticeDifficulty } from "@shared/types";
 const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 
 export const SERVER_URL = viteEnv?.VITE_SERVER_URL ?? "http://localhost:3001";
-export const SESSION_STORAGE_KEY = "anagram.sessionId";
+export const SESSION_TOKEN_STORAGE_KEY = "anagram.sessionToken";
 export const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
 export const PRACTICE_SHARE_QUERY_PARAM = "practice";
 export const PRACTICE_RESULT_SHARE_QUERY_PARAM = "practiceResult";

@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import type {
   ClaimEventMeta,
@@ -149,6 +149,7 @@ type GameStateInternal = {
 
 type SessionRecord = {
   sessionId: string;
+  sessionToken: string;
   playerId: string;
   name: string;
   roomId: string | null;
@@ -202,7 +203,9 @@ type PersistedGameState = {
   replay?: GameReplay;
 };
 
-type PersistedSessionRecord = Omit<SessionRecord, "socketId">;
+type PersistedSessionRecord = Omit<SessionRecord, "socketId" | "sessionToken"> & {
+  sessionToken?: string;
+};
 
 type PersistedSnapshotV1 = {
   version: 1;
@@ -217,6 +220,7 @@ const games = new Map<string, GameStateInternal>();
 const roomQueues = new Map<string, Promise<void>>();
 const sessionsById = new Map<string, SessionRecord>();
 const sessionsByPlayerId = new Map<string, SessionRecord>();
+const sessionsByToken = new Map<string, SessionRecord>();
 const socketToSessionId = new Map<string, string>();
 const practiceBySessionId = new Map<string, PracticeModeStateInternal>();
 const roomInactivityCleanupTimeouts = new Map<string, NodeJS.Timeout>();
@@ -361,11 +365,32 @@ function normalizeSessionId(value: unknown): string {
   return trimmed.slice(0, 128);
 }
 
+function generateSessionToken(): string {
+  return randomBytes(32).toString("hex");
+}
+
+function normalizeSessionToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 256) return null;
+  if (!/^[A-Za-z0-9]+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function getPayloadRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
 function emitSessionSelf(socket: Socket, session: SessionRecord) {
   socket.emit("session:self", {
     playerId: session.playerId,
     name: session.name,
-    roomId: session.roomId
+    roomId: session.roomId,
+    sessionToken: session.sessionToken
   });
   scheduleStatePersist();
 }
@@ -375,6 +400,46 @@ function getSessionBySocket(socket: Socket): SessionRecord | null {
   const sessionId = data.sessionId ?? socketToSessionId.get(socket.id);
   if (!sessionId) return null;
   return sessionsById.get(sessionId) ?? null;
+}
+
+function getPlayerActionContext(
+  socket: Socket,
+  requestedRoomId: unknown
+): { playerId: string; roomId: string } | null {
+  const data = getSocketData(socket);
+  const playerId = data.playerId;
+  if (!playerId) {
+    emitError(socket, "Player not found.");
+    return null;
+  }
+
+  const socketRoomId = data.roomId;
+  if (!socketRoomId) {
+    emitError(socket, "You are not in a room.");
+    return null;
+  }
+
+  if (
+    typeof requestedRoomId === "string" &&
+    requestedRoomId.trim().length > 0 &&
+    requestedRoomId !== socketRoomId
+  ) {
+    emitError(socket, "Invalid room.");
+    return null;
+  }
+
+  const room = rooms.get(socketRoomId);
+  if (!room) {
+    emitError(socket, "Room not found.");
+    return null;
+  }
+
+  if (!room.players.some((player) => player.id === playerId)) {
+    emitError(socket, "Player not found.");
+    return null;
+  }
+
+  return { playerId, roomId: socketRoomId };
 }
 
 function getActiveSocketForPlayer(playerId: string): Socket | null {
@@ -561,6 +626,7 @@ function getPersistedSnapshot(): PersistedSnapshotV1 {
   const persistedSessions = Array.from(sessionsById.values()).map((session) =>
     clone({
       sessionId: session.sessionId,
+      sessionToken: session.sessionToken,
       playerId: session.playerId,
       name: session.name,
       roomId: session.roomId && activeRoomIds.has(session.roomId) ? session.roomId : null
@@ -1856,6 +1922,7 @@ async function hydrateStateFromRedis() {
     roomQueues.clear();
     sessionsById.clear();
     sessionsByPlayerId.clear();
+    sessionsByToken.clear();
     socketToSessionId.clear();
 
     for (const persistedRoom of parsed.rooms) {
@@ -1873,8 +1940,10 @@ async function hydrateStateFromRedis() {
     }
 
     for (const persistedSession of parsed.sessions) {
+      const sessionToken = normalizeSessionToken(persistedSession.sessionToken) ?? generateSessionToken();
       const session: SessionRecord = {
         sessionId: persistedSession.sessionId,
+        sessionToken,
         playerId: persistedSession.playerId,
         name: persistedSession.name,
         roomId: persistedSession.roomId,
@@ -1885,6 +1954,7 @@ async function hydrateStateFromRedis() {
       }
       sessionsById.set(session.sessionId, session);
       sessionsByPlayerId.set(session.playerId, session);
+      sessionsByToken.set(session.sessionToken, session);
     }
 
     for (const persistedGame of parsed.games) {
@@ -1919,13 +1989,14 @@ async function hydrateStateFromRedis() {
 
 io.on("connection", (socket) => {
   const socketData = getSocketData(socket);
-  const auth = socket.handshake.auth as { sessionId?: unknown } | undefined;
-  const incomingSessionId = normalizeSessionId(auth?.sessionId);
+  const auth = socket.handshake.auth as { sessionToken?: unknown } | undefined;
+  const incomingSessionToken = normalizeSessionToken(auth?.sessionToken);
 
-  let session = sessionsById.get(incomingSessionId);
+  let session = incomingSessionToken ? sessionsByToken.get(incomingSessionToken) : undefined;
   if (!session) {
     session = {
-      sessionId: incomingSessionId,
+      sessionId: normalizeSessionId(randomUUID()),
+      sessionToken: generateSessionToken(),
       playerId: randomUUID(),
       name: "Player",
       roomId: null,
@@ -1933,6 +2004,7 @@ io.on("connection", (socket) => {
     };
     sessionsById.set(session.sessionId, session);
     sessionsByPlayerId.set(session.playerId, session);
+    sessionsByToken.set(session.sessionToken, session);
   }
   bindSocketToSession(socket, session);
 
@@ -2050,13 +2122,14 @@ io.on("connection", (socket) => {
 
   socket.on(
     "replay:analyze-step",
-    (
-      { roomId, stepIndex }: { roomId: string; stepIndex: number },
-      callback?: (response: ReplayAnalysisResponse) => void
-    ) => {
+    (payload: unknown, callback?: (response: ReplayAnalysisResponse) => void) => {
       if (typeof callback !== "function") {
         return;
       }
+
+      const request = getPayloadRecord(payload);
+      const roomId = typeof request.roomId === "string" ? request.roomId : "";
+      const stepIndex = request.stepIndex;
 
       const currentSession = getSessionBySocket(socket);
       if (!currentSession) {
@@ -2127,8 +2200,9 @@ io.on("connection", (socket) => {
         });
         return;
       }
+      const resolvedStepIndex = stepIndex as number;
 
-      const cached = game.replayAnalysisCache.get(stepIndex);
+      const cached = game.replayAnalysisCache.get(resolvedStepIndex);
       if (cached) {
         callback({
           ok: true,
@@ -2137,11 +2211,11 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const response = analyzeReplayStep(game, stepIndex, (candidatePuzzle) =>
+      const response = analyzeReplayStep(game, resolvedStepIndex, (candidatePuzzle) =>
         practiceEngine.solvePuzzle(candidatePuzzle)
       );
       if (response.ok) {
-        game.replayAnalysisCache.set(stepIndex, response.result);
+        game.replayAnalysisCache.set(resolvedStepIndex, response.result);
       }
       callback(response);
     }
@@ -2149,13 +2223,14 @@ io.on("connection", (socket) => {
 
   socket.on(
     "replay:analyze-imported-step",
-    (
-      { replayFile, stepIndex }: { replayFile: unknown; stepIndex: number },
-      callback?: (response: ReplayAnalysisResponse) => void
-    ) => {
+    (payload: unknown, callback?: (response: ReplayAnalysisResponse) => void) => {
       if (typeof callback !== "function") {
         return;
       }
+
+      const request = getPayloadRecord(payload);
+      const replayFile = request.replayFile;
+      const stepIndex = request.stepIndex;
 
       const currentSession = getSessionBySocket(socket);
       if (!currentSession) {
@@ -2173,6 +2248,7 @@ io.on("connection", (socket) => {
         });
         return;
       }
+      const resolvedStepIndex = stepIndex as number;
 
       const validation = validateReplayFile(replayFile);
       if (!validation.ok) {
@@ -2185,14 +2261,16 @@ io.on("connection", (socket) => {
 
       const response = analyzeReplayStep(
         { replay: validation.file.replay },
-        stepIndex,
+        resolvedStepIndex,
         (candidatePuzzle) => practiceEngine.solvePuzzle(candidatePuzzle)
       );
       callback(response);
     }
   );
 
-  socket.on("practice:set-difficulty", ({ difficulty }: { difficulty: PracticeDifficulty }) => {
+  socket.on("practice:set-difficulty", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const difficulty = request.difficulty;
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
@@ -2223,7 +2301,9 @@ io.on("connection", (socket) => {
     return true;
   }
 
-  socket.on("practice:submit", ({ word }: { word: string }) => {
+  socket.on("practice:submit", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const word = request.word;
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
@@ -2288,7 +2368,9 @@ io.on("connection", (socket) => {
     emitPracticeState(socket, currentSession.sessionId);
   });
 
-  socket.on("session:update-name", ({ name }: { name: string }) => {
+  socket.on("session:update-name", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const name = request.name;
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) return;
 
@@ -2334,27 +2416,20 @@ io.on("connection", (socket) => {
 
   socket.on(
     "room:create",
-    ({
-      roomName,
-      playerName,
-      name,
-      isPublic,
-      maxPlayers,
-      flipTimerEnabled,
-      flipTimerSeconds,
-      claimTimerSeconds,
-      preStealEnabled
-    }: {
-      roomName?: string;
-      playerName?: string;
-      name?: string;
-      isPublic: boolean;
-      maxPlayers: number;
-      flipTimerEnabled?: boolean;
-      flipTimerSeconds?: number;
-      claimTimerSeconds?: number;
-      preStealEnabled?: boolean;
-    }) => {
+    (payload: unknown) => {
+      const request = getPayloadRecord(payload);
+      const roomName = request.roomName;
+      const playerName = request.playerName;
+      const name = request.name;
+      const isPublic = request.isPublic === true;
+      const maxPlayers =
+        typeof request.maxPlayers === "number" && Number.isFinite(request.maxPlayers)
+          ? request.maxPlayers
+          : MAX_PLAYERS;
+      const flipTimerEnabled = request.flipTimerEnabled;
+      const flipTimerSeconds = request.flipTimerSeconds;
+      const claimTimerSeconds = request.claimTimerSeconds;
+      const preStealEnabled = request.preStealEnabled;
       const currentSession = getSessionBySocket(socket);
       if (!currentSession) {
         emitError(socket, "Session not found.");
@@ -2370,7 +2445,8 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const resolvedRoomName = typeof roomName === "string" ? roomName : name ?? "";
+      const resolvedRoomName =
+        typeof roomName === "string" ? roomName : typeof name === "string" ? name : "";
       const resolvedPlayerName =
         typeof playerName === "string"
           ? playerName
@@ -2429,7 +2505,11 @@ io.on("connection", (socket) => {
     }
   );
 
-  socket.on("room:join", ({ roomId, name, code }: { roomId: string; name: string; code?: string }) => {
+  socket.on("room:join", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const roomId = typeof request.roomId === "string" ? request.roomId : "";
+    const name = request.name;
+    const code = typeof request.code === "string" ? request.code : undefined;
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
@@ -2492,7 +2572,9 @@ io.on("connection", (socket) => {
     broadcastRoomList();
   });
 
-  socket.on("room:spectate", ({ roomId }: { roomId: string }) => {
+  socket.on("room:spectate", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const roomId = typeof request.roomId === "string" ? request.roomId : "";
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
@@ -2546,7 +2628,9 @@ io.on("connection", (socket) => {
     broadcastRoomList();
   });
 
-  socket.on("player:update-name", ({ name }: { name: string }) => {
+  socket.on("player:update-name", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const name = request.name;
     const currentSession = getSessionBySocket(socket);
     if (!currentSession) {
       emitError(socket, "Session not found.");
@@ -2590,12 +2674,25 @@ io.on("connection", (socket) => {
     emitRoomState(roomId);
   });
 
-  socket.on("room:start", ({ roomId }: { roomId: string }) => {
+  socket.on("room:start", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const requestedRoomId = typeof request.roomId === "string" ? request.roomId : "";
     const playerId = getSocketData(socket).playerId;
     if (!playerId) {
       emitError(socket, "Player not found.");
       return;
     }
+
+    const socketRoomId = getSocketData(socket).roomId;
+    if (!socketRoomId) {
+      emitError(socket, "You are not in a room.");
+      return;
+    }
+    if (requestedRoomId && requestedRoomId !== socketRoomId) {
+      emitError(socket, "Invalid room.");
+      return;
+    }
+    const roomId = socketRoomId;
 
     const room = rooms.get(roomId);
     if (!room) {
@@ -2681,12 +2778,11 @@ io.on("connection", (socket) => {
     handlePlayerLeave(roomId, playerId);
   });
 
-  socket.on("game:flip", ({ roomId }: { roomId: string }) => {
-    const playerId = getSocketData(socket).playerId;
-    if (!playerId) {
-      emitError(socket, "Player not found.");
-      return;
-    }
+  socket.on("game:flip", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const actionContext = getPlayerActionContext(socket, request.roomId);
+    if (!actionContext) return;
+    const { playerId, roomId } = actionContext;
 
     enqueue(roomId, () => {
       const game = games.get(roomId);
@@ -2717,20 +2813,13 @@ io.on("connection", (socket) => {
 
   socket.on(
     "game:pre-steal:add",
-    ({
-      roomId,
-      triggerLetters,
-      claimWord
-    }: {
-      roomId: string;
-      triggerLetters: string;
-      claimWord: string;
-    }) => {
-      const playerId = getSocketData(socket).playerId;
-      if (!playerId) {
-        emitError(socket, "Player not found.");
-        return;
-      }
+    (payload: unknown) => {
+      const request = getPayloadRecord(payload);
+      const actionContext = getPlayerActionContext(socket, request.roomId);
+      if (!actionContext) return;
+      const { playerId, roomId } = actionContext;
+      const triggerLetters = request.triggerLetters;
+      const claimWord = request.claimWord;
 
       enqueue(roomId, () => {
         const game = games.get(roomId);
@@ -2795,12 +2884,12 @@ io.on("connection", (socket) => {
 
   socket.on(
     "game:pre-steal:remove",
-    ({ roomId, entryId }: { roomId: string; entryId: string }) => {
-      const playerId = getSocketData(socket).playerId;
-      if (!playerId) {
-        emitError(socket, "Player not found.");
-        return;
-      }
+    (payload: unknown) => {
+      const request = getPayloadRecord(payload);
+      const actionContext = getPlayerActionContext(socket, request.roomId);
+      if (!actionContext) return;
+      const { playerId, roomId } = actionContext;
+      const entryId = request.entryId;
 
       enqueue(roomId, () => {
         const game = games.get(roomId);
@@ -2836,12 +2925,12 @@ io.on("connection", (socket) => {
 
   socket.on(
     "game:pre-steal:reorder",
-    ({ roomId, orderedEntryIds }: { roomId: string; orderedEntryIds: string[] }) => {
-      const playerId = getSocketData(socket).playerId;
-      if (!playerId) {
-        emitError(socket, "Player not found.");
-        return;
-      }
+    (payload: unknown) => {
+      const request = getPayloadRecord(payload);
+      const actionContext = getPlayerActionContext(socket, request.roomId);
+      if (!actionContext) return;
+      const { playerId, roomId } = actionContext;
+      const orderedEntryIds = request.orderedEntryIds;
 
       enqueue(roomId, () => {
         const game = games.get(roomId);
@@ -2896,12 +2985,11 @@ io.on("connection", (socket) => {
     }
   );
 
-  socket.on("game:claim-intent", ({ roomId }: { roomId: string }) => {
-    const playerId = getSocketData(socket).playerId;
-    if (!playerId) {
-      emitError(socket, "Player not found.");
-      return;
-    }
+  socket.on("game:claim-intent", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const actionContext = getPlayerActionContext(socket, request.roomId);
+    if (!actionContext) return;
+    const { playerId, roomId } = actionContext;
 
     enqueue(roomId, () => {
       const game = games.get(roomId);
@@ -2952,12 +3040,12 @@ io.on("connection", (socket) => {
 
   socket.on(
     "game:claim",
-    ({ roomId, word }: { roomId: string; word: string; targetWordId?: string }) => {
-      const playerId = getSocketData(socket).playerId;
-      if (!playerId) {
-        emitError(socket, "Player not found.");
-        return;
-      }
+    (payload: unknown) => {
+      const request = getPayloadRecord(payload);
+      const actionContext = getPlayerActionContext(socket, request.roomId);
+      if (!actionContext) return;
+      const { playerId, roomId } = actionContext;
+      const word = request.word;
 
       enqueue(roomId, () => {
         const game = games.get(roomId);

@@ -72,7 +72,8 @@ import {
 } from "./app/constants";
 import {
   socket,
-  generateId
+  generateId,
+  setSocketSessionToken
 } from "./app/network/socketClient";
 import {
   persistPlayerName,
@@ -347,12 +348,17 @@ export default function App() {
     };
     const onSessionSelf = ({
       playerId,
-      name
+      name,
+      sessionToken
     }: {
       playerId: string;
       name: string;
       roomId: string | null;
+      sessionToken?: string;
     }) => {
+      if (typeof sessionToken === "string" && sessionToken.trim()) {
+        setSocketSessionToken(sessionToken);
+      }
       setSelfPlayerId(playerId);
       if (playerName.trim()) {
         const sanitizedLocalName = sanitizeClientName(playerName);
