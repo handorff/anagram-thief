@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import type {
+  ChatMessage,
   ClaimEventMeta,
   GameReplay,
   ReplayAnalysisBasis,
@@ -62,6 +63,8 @@ const FLIP_REVEAL_MS = 1_000;
 const CLAIM_COOLDOWN_MS = 10_000;
 const ROOM_INACTIVITY_CLEANUP_MS = 15 * 60 * 1000;
 const MAX_PLAYERS = 8;
+const MAX_CHAT_MESSAGES = 200;
+const MAX_CHAT_MESSAGE_LENGTH = 280;
 const PRIVATE_ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PRIVATE_ROOM_CODE_LENGTH = 8;
 const PRIVATE_JOIN_RATE_WINDOW_MS = 60_000;
@@ -223,6 +226,7 @@ type PersistedSnapshotV1 = {
 
 const rooms = new Map<string, RoomState>();
 const games = new Map<string, GameStateInternal>();
+const roomChatMessages = new Map<string, ChatMessage[]>();
 const roomQueues = new Map<string, Promise<void>>();
 const sessionsById = new Map<string, SessionRecord>();
 const sessionsByPlayerId = new Map<string, SessionRecord>();
@@ -316,6 +320,13 @@ function normalizePrivateRoomCode(value: unknown): string {
   if (trimmed.length > 32) return "";
   if (!/^[A-Z0-9]+$/.test(trimmed)) return "";
   return trimmed;
+}
+
+function normalizeChatMessageText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.slice(0, MAX_CHAT_MESSAGE_LENGTH);
 }
 
 function getPrivateJoinIdentity(socket: Socket, session: SessionRecord): string {
@@ -792,6 +803,23 @@ function emitRoomState(roomId: string) {
   if (!room) return;
   io.to(roomId).emit("room:state", room);
   scheduleStatePersist();
+}
+
+function getRoomChatHistory(roomId: string): ChatMessage[] {
+  return roomChatMessages.get(roomId) ?? [];
+}
+
+function emitRoomChatHistory(socket: Socket, roomId: string) {
+  socket.emit("chat:history", getRoomChatHistory(roomId));
+}
+
+function appendRoomChatMessage(roomId: string, message: ChatMessage) {
+  const current = getRoomChatHistory(roomId);
+  const next = [...current, message];
+  if (next.length > MAX_CHAT_MESSAGES) {
+    next.splice(0, next.length - MAX_CHAT_MESSAGES);
+  }
+  roomChatMessages.set(roomId, next);
 }
 
 type GameStateViewerMode = "player" | "spectator";
@@ -1702,6 +1730,7 @@ function cleanupRoom(roomId: string) {
     clearGameTimers(game);
     games.delete(roomId);
   }
+  roomChatMessages.delete(roomId);
   rooms.delete(roomId);
   roomQueues.delete(roomId);
   broadcastRoomList();
@@ -2088,6 +2117,7 @@ io.on("connection", (socket) => {
           }
           emitGameState(restoreRoomId);
         }
+        emitRoomChatHistory(socket, restoreRoomId);
         syncRoomInactivityCleanup(restoreRoomId);
         emitRoomState(restoreRoomId);
         broadcastRoomList();
@@ -2101,6 +2131,7 @@ io.on("connection", (socket) => {
         if (game) {
           emitGameState(restoreRoomId);
         }
+        emitRoomChatHistory(socket, restoreRoomId);
         syncRoomInactivityCleanup(restoreRoomId);
         emitRoomState(restoreRoomId);
         broadcastRoomList();
@@ -2648,6 +2679,7 @@ io.on("connection", (socket) => {
     getSocketData(socket).roomId = roomId;
     socket.join(roomId);
     emitSessionSelf(socket, currentSession);
+    emitRoomChatHistory(socket, roomId);
 
     syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
@@ -2703,6 +2735,7 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     addSpectatorToRoom(room, currentSession.playerId, sanitizedName);
     emitSessionSelf(socket, currentSession);
+    emitRoomChatHistory(socket, roomId);
 
     syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
@@ -2836,10 +2869,74 @@ io.on("connection", (socket) => {
       replayAnalysisCache: new Map()
     };
     games.set(roomId, game);
+    roomChatMessages.set(roomId, []);
     scheduleFlipTimer(game);
     emitRoomState(roomId);
     emitGameState(roomId);
+    io.to(roomId).emit("chat:history", []);
     broadcastRoomList();
+  });
+
+  socket.on("chat:send", (payload: unknown) => {
+    const request = getPayloadRecord(payload);
+    const currentSession = getSessionBySocket(socket);
+    if (!currentSession) {
+      emitError(socket, "Session not found.");
+      return;
+    }
+
+    const socketRoomId = getSocketData(socket).roomId;
+    if (!socketRoomId) {
+      emitError(socket, "You are not in a room.");
+      return;
+    }
+
+    if (
+      typeof request.roomId === "string" &&
+      request.roomId.trim().length > 0 &&
+      request.roomId !== socketRoomId
+    ) {
+      emitError(socket, "Invalid room.");
+      return;
+    }
+
+    const room = rooms.get(socketRoomId);
+    if (!room) {
+      emitError(socket, "Room not found.");
+      return;
+    }
+
+    const roomPlayer = room.players.find((player) => player.id === currentSession.playerId);
+    if (!roomPlayer) {
+      if (findSpectator(room, currentSession.playerId)) {
+        emitError(socket, "Spectators cannot send chat messages.");
+        return;
+      }
+      emitError(socket, "Player not found.");
+      return;
+    }
+
+    const game = games.get(socketRoomId);
+    if (!game || game.status !== "in-game") {
+      emitError(socket, "Chat is only available during games.");
+      return;
+    }
+
+    const normalizedText = normalizeChatMessageText(request.text);
+    if (!normalizedText) {
+      emitError(socket, "Enter a chat message.");
+      return;
+    }
+
+    const message: ChatMessage = {
+      id: randomUUID(),
+      senderPlayerId: roomPlayer.id,
+      senderName: roomPlayer.name,
+      text: normalizedText,
+      timestamp: Date.now()
+    };
+    appendRoomChatMessage(socketRoomId, message);
+    io.to(socketRoomId).emit("chat:message", message);
   });
 
   socket.on("room:leave", () => {

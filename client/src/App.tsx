@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type {
+  ChatMessage,
   GameState,
   Player,
   PracticeDifficulty,
@@ -56,6 +57,8 @@ import {
   DEFAULT_PRACTICE_TIMER_SECONDS,
   LETTER_PATTERN,
   MAX_CLAIM_TIMER_SECONDS,
+  MAX_CHAT_ENTRIES,
+  MAX_CHAT_MESSAGE_LENGTH,
   MAX_FLIP_TIMER_SECONDS,
   MAX_LOG_ENTRIES,
   MAX_PRACTICE_TIMER_SECONDS,
@@ -166,6 +169,8 @@ export default function App() {
   );
   const [pendingResultAutoSubmit, setPendingResultAutoSubmit] = useState<PendingResultAutoSubmit | null>(null);
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
   const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
@@ -212,6 +217,7 @@ export default function App() {
   const practiceInputRef = useRef<HTMLInputElement>(null);
   const replayImportInputRef = useRef<HTMLInputElement>(null);
   const gameLogListRef = useRef<HTMLDivElement>(null);
+  const chatListRef = useRef<HTMLDivElement>(null);
   const previousGameStateRef = useRef<GameState | null>(null);
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
   const roomStatusRef = useRef<RoomState["status"] | null>(null);
@@ -327,6 +333,25 @@ export default function App() {
     const onRoomState = (state: RoomState) => setRoomState(state);
     const onGameState = (state: GameState) => setGameState(state);
     const onPracticeState = (state: PracticeModeState) => setPracticeState(state);
+    const onChatHistory = (messages: ChatMessage[]) => {
+      if (!Array.isArray(messages)) {
+        setChatMessages([]);
+        return;
+      }
+      if (messages.length <= MAX_CHAT_ENTRIES) {
+        setChatMessages(messages);
+        return;
+      }
+      setChatMessages(messages.slice(messages.length - MAX_CHAT_ENTRIES));
+    };
+    const onChatMessage = (message: ChatMessage) => {
+      if (!message || typeof message !== "object") return;
+      setChatMessages((current) => {
+        const next = [...current, message];
+        if (next.length <= MAX_CHAT_ENTRIES) return next;
+        return next.slice(next.length - MAX_CHAT_ENTRIES);
+      });
+    };
     const onError = ({ message }: { message: string }) => {
       if (practiceModeRef.current.active && practiceModeRef.current.phase === "puzzle") {
         setPracticeSubmitError(message);
@@ -387,6 +412,8 @@ export default function App() {
     socket.on("room:state", onRoomState);
     socket.on("game:state", onGameState);
     socket.on("practice:state", onPracticeState);
+    socket.on("chat:history", onChatHistory);
+    socket.on("chat:message", onChatMessage);
     socket.on("session:self", onSessionSelf);
     socket.on("error", onError);
 
@@ -401,6 +428,8 @@ export default function App() {
       socket.off("room:state", onRoomState);
       socket.off("game:state", onGameState);
       socket.off("practice:state", onPracticeState);
+      socket.off("chat:history", onChatHistory);
+      socket.off("chat:message", onChatMessage);
       socket.off("session:self", onSessionSelf);
       socket.off("error", onError);
     };
@@ -545,6 +574,7 @@ export default function App() {
   const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isTileSelectionEnabled = isTileInputMethodEnabled && !isSpectator;
   const shouldShowGameLog = Boolean(gameState) && roomState?.status === "in-game";
+  const isBottomPanelChatMode = userSettings.bottomPanelMode === "chat";
   const roomReplay = gameState?.replay ?? null;
   const roomReplaySteps = useMemo(
     () =>
@@ -1117,6 +1147,8 @@ export default function App() {
     setReplayAnalysisError(null);
     setShowAllReplayOptionsByStep({});
     setGameLogEntries([]);
+    setChatMessages([]);
+    setChatDraft("");
     setQueuedTileClaimLetters("");
     clearClaimWordHighlights();
     previousGameStateRef.current = null;
@@ -1384,6 +1416,27 @@ export default function App() {
     persistUserSettings(userSettingsDraft);
     setIsSettingsOpen(false);
   }, [editNameDraft, roomId, userSettingsDraft]);
+
+  const handleBottomPanelModeChange = useCallback((mode: "log" | "chat") => {
+    setUserSettings((current) => {
+      if (current.bottomPanelMode === mode) {
+        return current;
+      }
+      const next = { ...current, bottomPanelMode: mode };
+      persistUserSettings(next);
+      return next;
+    });
+    setUserSettingsDraft((current) => ({ ...current, bottomPanelMode: mode }));
+  }, []);
+
+  const handleChatSubmit = useCallback(() => {
+    if (!roomId) return;
+    if (isSpectator) return;
+    const text = chatDraft.trim();
+    if (!text) return;
+    socket.emit("chat:send", { roomId, text });
+    setChatDraft("");
+  }, [roomId, isSpectator, chatDraft]);
 
   const handleFlip = useCallback(() => {
     if (!roomId) return;
@@ -1841,6 +1894,8 @@ export default function App() {
 
     if (shouldReset) {
       setGameLogEntries([]);
+      setChatMessages([]);
+      setChatDraft("");
       clearClaimWordHighlights();
       previousGameStateRef.current = null;
       lastClaimFailureRef.current = null;
@@ -1850,11 +1905,20 @@ export default function App() {
   }, [clearClaimWordHighlights, roomState?.id, roomState?.status]);
 
   useEffect(() => {
+    if (isBottomPanelChatMode) return;
     if (!shouldShowGameLog) return;
     const logListElement = gameLogListRef.current;
     if (!logListElement) return;
     logListElement.scrollTop = logListElement.scrollHeight;
-  }, [gameLogEntries.length, shouldShowGameLog]);
+  }, [gameLogEntries.length, isBottomPanelChatMode, shouldShowGameLog]);
+
+  useEffect(() => {
+    if (!isBottomPanelChatMode) return;
+    if (!shouldShowGameLog) return;
+    const chatListElement = chatListRef.current;
+    if (!chatListElement) return;
+    chatListElement.scrollTop = chatListElement.scrollHeight;
+  }, [chatMessages.length, isBottomPanelChatMode, shouldShowGameLog]);
 
   useEffect(() => {
     if (!gameState || !roomState || (roomState.status !== "in-game" && roomState.status !== "ended")) {
@@ -2303,20 +2367,73 @@ export default function App() {
 
       {shouldShowGameLog && (
         <section className="game-log">
-          <div ref={gameLogListRef} className="game-log-list">
-            {gameLogEntries.length === 0 && (
-              <div className="game-log-empty muted">No gameplay events yet.</div>
-            )}
-            {gameLogEntries.map((entry) => (
-              <div
-                key={entry.id}
-                className={`game-log-row ${entry.kind === "error" ? "error" : ""}`}
-              >
-                <span className="game-log-time">{formatLogTime(entry.timestamp)}</span>
-                <span className="game-log-text">{entry.text}</span>
-              </div>
-            ))}
+          <div className="game-log-controls">
+            <button
+              type="button"
+              className={`game-log-mode-button ${!isBottomPanelChatMode ? "active" : ""}`}
+              onClick={() => handleBottomPanelModeChange("log")}
+            >
+              Game Log
+            </button>
+            <button
+              type="button"
+              className={`game-log-mode-button ${isBottomPanelChatMode ? "active" : ""}`}
+              onClick={() => handleBottomPanelModeChange("chat")}
+            >
+              Chat
+            </button>
           </div>
+          {!isBottomPanelChatMode && (
+            <div ref={gameLogListRef} className="game-log-list">
+              {gameLogEntries.length === 0 && (
+                <div className="game-log-empty muted">No gameplay events yet.</div>
+              )}
+              {gameLogEntries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className={`game-log-row ${entry.kind === "error" ? "error" : ""}`}
+                >
+                  <span className="game-log-time">{formatLogTime(entry.timestamp)}</span>
+                  <span className="game-log-text">{entry.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {isBottomPanelChatMode && (
+            <>
+              <div ref={chatListRef} className="game-log-list">
+                {chatMessages.length === 0 && (
+                  <div className="game-log-empty muted">No chat messages yet.</div>
+                )}
+                {chatMessages.map((message) => (
+                  <div key={message.id} className="chat-log-row">
+                    <span className="game-log-time">{formatLogTime(message.timestamp)}</span>
+                    <span className="chat-log-message">
+                      <span className="chat-log-sender">{message.senderName}:</span> {message.text}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <form
+                className="chat-composer"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  handleChatSubmit();
+                }}
+              >
+                <input
+                  value={chatDraft}
+                  onChange={(event) => setChatDraft(event.target.value)}
+                  placeholder={isSpectator ? "Spectators can read chat only." : "Type a message..."}
+                  maxLength={MAX_CHAT_MESSAGE_LENGTH}
+                  disabled={isSpectator}
+                />
+                <button type="submit" disabled={isSpectator || !chatDraft.trim()}>
+                  Send
+                </button>
+              </form>
+            </>
+          )}
         </section>
       )}
 

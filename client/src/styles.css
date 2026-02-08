@@ -256,7 +256,7 @@ h1, h2, h3 {
 }
 
 .page.has-game-log {
-  padding-bottom: 8.5rem;
+  padding-bottom: 11rem;
 }
 
 /* ─── Name gate ─────────────────────────────────────────────── */
@@ -1493,7 +1493,35 @@ button:disabled {
   padding-right: 0.35rem;
 }
 
+.game-log-controls {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.game-log-mode-button {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+
+.game-log-mode-button.active {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  border-color: var(--color-accent);
+}
+
 .game-log-row {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  padding: 0.1rem 0;
+}
+
+.chat-log-row {
   display: flex;
   gap: 0.7rem;
   align-items: flex-start;
@@ -1518,8 +1546,37 @@ button:disabled {
   font-size: 0.92rem;
 }
 
+.chat-log-message {
+  line-height: 1.35;
+  font-size: 0.92rem;
+}
+
+.chat-log-sender {
+  font-weight: 700;
+}
+
 .game-log-empty {
   padding: 0.35rem 0.1rem;
+}
+
+.chat-composer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.chat-composer input {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-composer input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.chat-composer button {
+  flex: none;
 }
 
 /* ─── Responsive ────────────────────────────────────────────── */
@@ -1529,7 +1586,7 @@ button:disabled {
   }
 
   .page.has-game-log {
-    padding-bottom: 9.5rem;
+    padding-bottom: 12rem;
   }
 
   .game {
@@ -1598,5 +1655,10 @@ button:disabled {
 
   .game-log-list {
     width: 100%;
+  }
+
+  .chat-composer {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

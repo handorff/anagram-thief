@@ -72,6 +72,14 @@ export interface RoomState {
   preSteal: PreStealSettings;
 }
 
+export interface ChatMessage {
+  id: string;
+  senderPlayerId: string;
+  senderName: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface ClaimWindowState {
   playerId: string;
   endsAt: number;

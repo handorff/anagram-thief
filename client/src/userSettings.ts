@@ -4,15 +4,18 @@ const USER_SETTINGS_STORAGE_KEY = "anagram.userSettings";
 
 export type InputMethodSetting = "typing" | "tile";
 export type ThemeSetting = "light" | "dark";
+export type BottomPanelModeSetting = "log" | "chat";
 
 export type UserSettings = {
   inputMethod: InputMethodSetting;
   theme: ThemeSetting;
+  bottomPanelMode: BottomPanelModeSetting;
 };
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   inputMethod: "typing",
-  theme: "light"
+  theme: "light",
+  bottomPanelMode: "log"
 };
 
 function normalizeInputMethodSetting(value: unknown): InputMethodSetting {
@@ -23,6 +26,10 @@ function normalizeThemeSetting(value: unknown): ThemeSetting {
   return value === "dark" ? "dark" : "light";
 }
 
+function normalizeBottomPanelModeSetting(value: unknown): BottomPanelModeSetting {
+  return value === "chat" ? "chat" : "log";
+}
+
 function normalizeUserSettings(value: unknown): UserSettings {
   if (!value || typeof value !== "object") {
     return DEFAULT_USER_SETTINGS;
@@ -31,7 +38,8 @@ function normalizeUserSettings(value: unknown): UserSettings {
   const candidate = value as Partial<UserSettings>;
   return {
     inputMethod: normalizeInputMethodSetting(candidate.inputMethod),
-    theme: normalizeThemeSetting(candidate.theme)
+    theme: normalizeThemeSetting(candidate.theme),
+    bottomPanelMode: normalizeBottomPanelModeSetting(candidate.bottomPanelMode)
   };
 }
 
