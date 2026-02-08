@@ -824,6 +824,20 @@ function appendRoomChatMessage(roomId: string, message: ChatMessage) {
 
 type GameStateViewerMode = "player" | "spectator";
 
+const BAG_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+function getBagLetterCounts(bag: Tile[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const letter of BAG_LETTERS) {
+    counts[letter] = 0;
+  }
+  for (const tile of bag) {
+    if (counts[tile.letter] === undefined) continue;
+    counts[tile.letter] += 1;
+  }
+  return counts;
+}
+
 function buildReplaySnapshot(game: GameStateInternal): ReplayStateSnapshot {
   return {
     roomId: game.roomId,
@@ -1031,6 +1045,7 @@ function buildGameStateForViewer(
     roomId: game.roomId,
     status: game.status,
     bagCount: game.bag.length,
+    bagLetterCounts: getBagLetterCounts(game.bag),
     centerTiles: game.centerTiles,
     players: game.players.map((player) => ({
       ...player,

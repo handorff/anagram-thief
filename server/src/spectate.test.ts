@@ -76,6 +76,9 @@ test("buildGameStateForViewer hides other players pre-steal entries for players"
 
   assert.ok(aliceState);
   assert.ok(bobState);
+  assert.equal(state.bagLetterCounts?.A, 0);
+  assert.equal(state.bagLetterCounts?.E, 1);
+  assert.equal(state.bagLetterCounts?.T, 1);
   assert.equal(aliceState.preStealEntries.length, 1);
   assert.equal(bobState.preStealEntries.length, 0);
 });

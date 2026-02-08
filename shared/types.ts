@@ -205,6 +205,7 @@ export interface GameState {
   roomId: string;
   status: "in-game" | "ended";
   bagCount: number;
+  bagLetterCounts?: Record<string, number>;
   centerTiles: Tile[];
   players: Player[];
   turnPlayerId: string;

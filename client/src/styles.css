@@ -932,6 +932,23 @@ button:disabled {
   width: fit-content;
 }
 
+.bag-count-trigger {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.bag-count-trigger:hover {
+  color: var(--color-text);
+}
+
+.bag-count-trigger:focus-visible {
+  outline: 2px solid var(--color-info);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* ─── Tiles ─────────────────────────────────────────────────── */
 .tiles {
   display: flex;
@@ -1428,6 +1445,46 @@ button:disabled {
 
 .practice-start-modal {
   gap: 1.1rem;
+}
+
+.remaining-tiles-modal {
+  width: min(520px, 95vw);
+  max-height: min(82vh, 760px);
+}
+
+.remaining-tiles-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 0.55rem;
+  max-height: min(58vh, 520px);
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.remaining-tiles-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-light);
+}
+
+.remaining-tiles-item.empty {
+  opacity: 0.55;
+}
+
+.remaining-tiles-letter {
+  width: 40px;
+  height: 40px;
+  font-size: 1.15rem;
+  box-shadow: 0 1px 2px var(--color-tile-shadow);
+}
+
+.remaining-tiles-count {
+  font-size: 0.98rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .practice-start-difficulty-picker {

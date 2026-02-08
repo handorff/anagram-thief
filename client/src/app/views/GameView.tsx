@@ -1,3 +1,8 @@
+import {
+  useMemo,
+  useState,
+  type KeyboardEvent
+} from "react";
 import type {
   Dispatch,
   RefObject,
@@ -10,6 +15,8 @@ import type {
 } from "@shared/types";
 import { WordList } from "../components/WordList";
 import type { WordHighlightKind } from "../types";
+
+const BAG_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 type SpectatorPreStealPlayer = {
   id: string;
@@ -103,13 +110,39 @@ export function GameView({
   onPreStealEntryDrop,
   onRemovePreStealEntry
 }: Props) {
+  const [isRemainingTilesModalOpen, setIsRemainingTilesModalOpen] = useState(false);
+
+  const remainingBagLetterCounts = useMemo(
+    () =>
+      BAG_LETTERS.map((letter) => ({
+        letter,
+        count: gameState.bagLetterCounts?.[letter] ?? 0
+      })),
+    [gameState.bagLetterCounts]
+  );
+
+  const handleBagCountKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    setIsRemainingTilesModalOpen(true);
+  };
+
   return (
     <div className="game">
       <section className="panel game-board">
         <div className="game-header">
           <div>
             <h2>Center Tiles</h2>
-            <p className="muted">Bag: {gameState.bagCount} tiles</p>
+            <div
+              className="muted bag-count-trigger"
+              role="button"
+              tabIndex={0}
+              onClick={() => setIsRemainingTilesModalOpen(true)}
+              onKeyDown={handleBagCountKeyDown}
+              aria-label="Show remaining tiles in bag"
+            >
+              Bag: {gameState.bagCount} tiles
+            </div>
             {roomState?.flipTimer.enabled && (
               <p className="muted">Auto flip: {roomState.flipTimer.seconds}s</p>
             )}
@@ -343,6 +376,38 @@ export function GameView({
           </div>
         )}
       </section>
+
+      {isRemainingTilesModalOpen && (
+        <div className="join-overlay" onClick={() => setIsRemainingTilesModalOpen(false)}>
+          <div
+            className="panel join-modal remaining-tiles-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Remaining tiles in bag"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>Remaining Tiles</h2>
+            <p className="muted">A-Z counts for tiles still in the bag.</p>
+            <div className="remaining-tiles-list">
+              {remainingBagLetterCounts.map(({ letter, count }) => (
+                <div
+                  key={letter}
+                  className={count > 0 ? "remaining-tiles-item" : "remaining-tiles-item empty"}
+                  aria-label={`${letter} has ${count} tiles remaining`}
+                >
+                  <span className="tile remaining-tiles-letter">{letter}</span>
+                  <span className="remaining-tiles-count">x{count}</span>
+                </div>
+              ))}
+            </div>
+            <div className="button-row">
+              <button className="button-secondary" onClick={() => setIsRemainingTilesModalOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
