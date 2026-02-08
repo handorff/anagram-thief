@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "NODE_ENV=test node --test --loader tsx src/App.replayImportExport.test.tsx"
+    "test": "NODE_ENV=test node --test --loader tsx $(find src -name '*.test.ts' -o -name '*.test.tsx')"
   },
   "dependencies": {
     "react": "^18.3.1",

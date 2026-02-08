@@ -1,20 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { io } from "socket.io-client";
 import type {
-  GameReplay,
   GameState,
   Player,
   PracticeDifficulty,
   PracticeModeState,
-  PracticeResultSharePayload,
-  PracticeResult,
   PracticeScoredWord,
-  PracticeSharePayload,
   PracticeValidateCustomResponse,
   ReplayAnalysisMap,
   ReplayAnalysisResponse,
   ReplayAnalysisResult,
-  ReplayFileV1,
   ReplayPlayerSnapshot,
   ReplayStateSnapshot,
   RoomState,
@@ -22,12 +16,10 @@ import type {
 } from "@shared/types";
 import {
   buildPracticeSharePayload,
-  decodePracticeSharePayload,
   encodePracticeSharePayload
 } from "@shared/practiceShare";
 import {
   buildPracticeResultSharePayload,
-  decodePracticeResultSharePayload,
   encodePracticeResultSharePayload
 } from "@shared/practiceResultShare";
 import {
@@ -46,548 +38,102 @@ import {
   persistUserSettings,
   readStoredUserSettings,
   UserSettingsContext,
-  useUserSettings,
   type UserSettings
 } from "./userSettings";
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
-const SESSION_STORAGE_KEY = "anagram.sessionId";
-const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
-const PRACTICE_SHARE_QUERY_PARAM = "practice";
-const PRACTICE_RESULT_SHARE_QUERY_PARAM = "practiceResult";
-const PRIVATE_ROOM_QUERY_PARAM = "room";
-const PRIVATE_ROOM_CODE_QUERY_PARAM = "code";
-const LETTER_PATTERN = /^[A-Z]+$/;
-const PENDING_RESULT_AUTO_SUBMIT_TTL_MS = 15_000;
-
-function generateId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function readStoredPlayerName() {
-  if (typeof window === "undefined") return "";
-  try {
-    const value = window.localStorage.getItem(PLAYER_NAME_STORAGE_KEY);
-    return value ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function persistPlayerName(name: string) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(PLAYER_NAME_STORAGE_KEY, name);
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function getOrCreateSessionId() {
-  if (typeof window === "undefined") return generateId();
-  try {
-    const existing = window.localStorage.getItem(SESSION_STORAGE_KEY);
-    if (existing && existing.trim()) {
-      return existing.trim();
-    }
-    const created = generateId();
-    window.localStorage.setItem(SESSION_STORAGE_KEY, created);
-    return created;
-  } catch {
-    return generateId();
-  }
-}
-
-type PendingSharedLaunch =
-  | {
-      kind: "puzzle";
-      payload: PracticeSharePayload;
-    }
-  | {
-      kind: "result";
-      payload: PracticeSharePayload;
-      submittedWord: string;
-      sharerName?: string;
-      expectedPuzzleFingerprint: string;
-    };
-
-type PendingResultAutoSubmit = {
-  submittedWord: string;
-  expectedPuzzleFingerprint: string;
-  expiresAt: number;
-};
-
-type PendingPrivateRoomJoin = {
-  roomId: string;
-  code: string;
-};
-
-function buildPracticePuzzleFingerprint(payload: Pick<PracticeSharePayload, "c" | "w">): string {
-  return `${payload.c}|${payload.w.join(",")}`;
-}
-
-function buildPracticePuzzleFingerprintFromState(puzzle: PracticeModeState["puzzle"]): string | null {
-  if (!puzzle) return null;
-  const center = puzzle.centerTiles.map((tile) => normalizeEditorText(tile.letter)).join("");
-  const words = puzzle.existingWords.map((word) => normalizeEditorText(word.text));
-  return buildPracticePuzzleFingerprint({
-    c: center,
-    w: words
-  });
-}
-
-function parseResultSharePayloadFromUrl(token: string): PracticeResultSharePayload | null {
-  return decodePracticeResultSharePayload(token);
-}
-
-function readPendingSharedLaunchFromUrl(): PendingSharedLaunch | null {
-  if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(window.location.search);
-  const resultToken = params.get(PRACTICE_RESULT_SHARE_QUERY_PARAM);
-  if (resultToken) {
-    const parsed = parseResultSharePayloadFromUrl(resultToken);
-    if (parsed) {
-      return {
-        kind: "result",
-        payload: parsed.p,
-        submittedWord: parsed.a,
-        sharerName: parsed.n,
-        expectedPuzzleFingerprint: buildPracticePuzzleFingerprint(parsed.p)
-      };
-    }
-  }
-
-  const practiceToken = params.get(PRACTICE_SHARE_QUERY_PARAM);
-  if (!practiceToken) return null;
-  const puzzlePayload = decodePracticeSharePayload(practiceToken);
-  if (!puzzlePayload) return null;
-  return {
-    kind: "puzzle",
-    payload: puzzlePayload
-  };
-}
-
-function readPendingPrivateRoomJoinFromUrl(): PendingPrivateRoomJoin | null {
-  if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(window.location.search);
-  const roomId = params.get(PRIVATE_ROOM_QUERY_PARAM)?.trim();
-  const code = params.get(PRIVATE_ROOM_CODE_QUERY_PARAM)?.trim();
-  if (!roomId || !code) return null;
-  return { roomId, code };
-}
-
-function removePracticeShareFromUrl() {
-  if (typeof window === "undefined") return;
-  const params = new URLSearchParams(window.location.search);
-  if (!params.has(PRACTICE_SHARE_QUERY_PARAM) && !params.has(PRACTICE_RESULT_SHARE_QUERY_PARAM)) return;
-  params.delete(PRACTICE_SHARE_QUERY_PARAM);
-  params.delete(PRACTICE_RESULT_SHARE_QUERY_PARAM);
-  const search = params.toString();
-  const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
-  window.history.replaceState(window.history.state, "", nextUrl);
-}
-
-function removePrivateRoomJoinFromUrl() {
-  if (typeof window === "undefined") return;
-  const params = new URLSearchParams(window.location.search);
-  if (!params.has(PRIVATE_ROOM_QUERY_PARAM) && !params.has(PRIVATE_ROOM_CODE_QUERY_PARAM)) return;
-  params.delete(PRIVATE_ROOM_QUERY_PARAM);
-  params.delete(PRIVATE_ROOM_CODE_QUERY_PARAM);
-  const search = params.toString();
-  const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
-  window.history.replaceState(window.history.state, "", nextUrl);
-}
-
-function buildPrivateRoomInviteUrl(roomId: string, code: string): string {
-  const inviteUrl = new URL(window.location.origin + window.location.pathname);
-  inviteUrl.searchParams.set(PRIVATE_ROOM_QUERY_PARAM, roomId);
-  inviteUrl.searchParams.set(PRIVATE_ROOM_CODE_QUERY_PARAM, code);
-  return inviteUrl.toString();
-}
-
-const sessionId = getOrCreateSessionId();
-const socket = io(SERVER_URL, { autoConnect: false });
-socket.auth = { sessionId };
-socket.connect();
-
-function formatTime(seconds: number) {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
-
-function sanitizeClientName(name: string) {
-  const trimmed = name.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, 24) : "Player";
-}
-
-function normalizeEditorText(value: string): string {
-  return value.trim().toUpperCase();
-}
-
-const DEFAULT_PRACTICE_DIFFICULTY: PracticeDifficulty = 3;
-const DEFAULT_FLIP_TIMER_SECONDS = 15;
-const MIN_FLIP_TIMER_SECONDS = 1;
-const MAX_FLIP_TIMER_SECONDS = 60;
-const DEFAULT_CLAIM_TIMER_SECONDS = 3;
-const MIN_CLAIM_TIMER_SECONDS = 1;
-const MAX_CLAIM_TIMER_SECONDS = 10;
-const DEFAULT_PRACTICE_TIMER_SECONDS = 60;
-const MIN_PRACTICE_TIMER_SECONDS = 10;
-const MAX_PRACTICE_TIMER_SECONDS = 120;
-const REPLAY_ANALYSIS_TIMEOUT_MS = 7_000;
-const REPLAY_ANALYSIS_DEFAULT_VISIBLE_OPTIONS = 3;
-const PRACTICE_TIMER_WARNING_SECONDS = 5;
-const DEFAULT_FLIP_REVEAL_MS = 1_000;
-const CLAIM_WORD_ANIMATION_MS = 1_100;
-const MAX_LOG_ENTRIES = 300;
-const CLAIM_FAILURE_WINDOW_MS = 4_000;
-const CUSTOM_PUZZLE_CENTER_LETTER_MIN = 1;
-const CUSTOM_PUZZLE_CENTER_LETTER_MAX = 16;
-const CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX = 8;
-const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MIN = 4;
-const CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX = 16;
-const CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX = 96;
-const CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS = 5_000;
-const REPLAY_FILE_INPUT_ACCEPT = "application/json,.json";
-const CLAIM_FAILURE_MESSAGES = new Set([
-  "Claim window expired.",
-  "Enter a word to claim.",
-  "Word must contain only letters A-Z.",
-  "Word is not valid.",
-  "Not enough tiles in the center to make that word."
-]);
-
-function createInactivePracticeState(
-  difficulty: PracticeDifficulty = DEFAULT_PRACTICE_DIFFICULTY
-): PracticeModeState {
-  return {
-    active: false,
-    phase: "puzzle",
-    currentDifficulty: difficulty,
-    queuedDifficulty: difficulty,
-    timerEnabled: false,
-    timerSeconds: DEFAULT_PRACTICE_TIMER_SECONDS,
-    puzzleTimerEndsAt: null,
-    puzzle: null,
-    result: null
-  };
-}
-
-type GameLogKind = "event" | "error";
-
-type GameLogEntry = {
-  id: string;
-  timestamp: number;
-  text: string;
-  kind: GameLogKind;
-};
-
-type WordSnapshot = {
-  id: string;
-  text: string;
-  tileIds: string[];
-  ownerId: string;
-  createdAt: number;
-};
-
-type PendingGameLogEntry = {
-  text: string;
-  kind: GameLogKind;
-  timestamp?: number;
-};
-
-type ClaimFailureContext = {
-  message: string;
-  at: number;
-};
-
-type WordHighlightKind = "claim" | "steal";
-
-type EditorPuzzleDraft = {
-  payload: PracticeSharePayload | null;
-  validationMessage: string | null;
-  normalizedCenter: string;
-  normalizedExistingWords: string[];
-};
-
-type ReplaySource =
-  | {
-      kind: "room";
-      replay: GameReplay;
-    }
-  | {
-      kind: "imported";
-      file: ReplayFileV1;
-    };
-
-function clampFlipTimerSeconds(value: number) {
-  const rounded = Math.round(value);
-  if (Number.isNaN(rounded)) return DEFAULT_FLIP_TIMER_SECONDS;
-  return Math.min(MAX_FLIP_TIMER_SECONDS, Math.max(MIN_FLIP_TIMER_SECONDS, rounded));
-}
-
-function clampClaimTimerSeconds(value: number) {
-  const rounded = Math.round(value);
-  if (Number.isNaN(rounded)) return DEFAULT_CLAIM_TIMER_SECONDS;
-  return Math.min(MAX_CLAIM_TIMER_SECONDS, Math.max(MIN_CLAIM_TIMER_SECONDS, rounded));
-}
-
-function clampPracticeDifficulty(value: number): PracticeDifficulty {
-  const rounded = Math.round(value);
-  if (Number.isNaN(rounded)) return DEFAULT_PRACTICE_DIFFICULTY;
-  if (rounded <= 1) return 1;
-  if (rounded >= 5) return 5;
-  return rounded as PracticeDifficulty;
-}
-
-function clampPracticeTimerSeconds(value: number): number {
-  const rounded = Math.round(value);
-  if (Number.isNaN(rounded)) return DEFAULT_PRACTICE_TIMER_SECONDS;
-  return Math.min(MAX_PRACTICE_TIMER_SECONDS, Math.max(MIN_PRACTICE_TIMER_SECONDS, rounded));
-}
-
-function formatLogTime(timestamp: number) {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  });
-}
-
-function getPracticeResultCategory(result: PracticeResult): {
-  key: "perfect" | "amazing" | "great" | "good" | "ok" | "better-luck-next-time";
-  label: string;
-} {
-  if (result.score <= 0) {
-    return {
-      key: "better-luck-next-time",
-      label: "Better luck next time"
-    };
-  }
-  if (result.bestScore <= 0 || result.score === result.bestScore) {
-    return {
-      key: "perfect",
-      label: "Perfect"
-    };
-  }
-
-  const ratio = result.score / result.bestScore;
-  if (ratio >= 0.9) {
-    return { key: "amazing", label: "Amazing" };
-  }
-  if (ratio >= 0.75) {
-    return { key: "great", label: "Great" };
-  }
-  if (ratio >= 0.5) {
-    return { key: "good", label: "Good" };
-  }
-  return { key: "ok", label: "OK" };
-}
-
-function getPlayerName<TPlayer extends { id: string; name: string }>(
-  players: TPlayer[],
-  playerId: string | null | undefined
-) {
-  if (!playerId) return "Unknown";
-  return players.find((player) => player.id === playerId)?.name ?? "Unknown";
-}
-
-function getWordSnapshots(players: Array<{ id: string; words: { id: string; text: string; tileIds: string[]; createdAt: number }[] }>): WordSnapshot[] {
-  const snapshots: WordSnapshot[] = [];
-  for (const player of players) {
-    for (const word of player.words) {
-      snapshots.push({
-        id: word.id,
-        text: word.text,
-        tileIds: word.tileIds,
-        ownerId: player.id,
-        createdAt: word.createdAt
-      });
-    }
-  }
-  return snapshots;
-}
-
-function findReplacedWord(addedWord: WordSnapshot, removedWords: WordSnapshot[]) {
-  const matches = removedWords.filter((word) =>
-    word.tileIds.every((tileId) => addedWord.tileIds.includes(tileId))
-  );
-  if (matches.length === 0) return null;
-
-  matches.sort((a, b) => {
-    if (a.tileIds.length !== b.tileIds.length) {
-      return b.tileIds.length - a.tileIds.length;
-    }
-    return a.createdAt - b.createdAt;
-  });
-
-  return matches[0];
-}
-
-function appendPreStealLogContext(
-  text: string,
-  state: Pick<GameState, "lastClaimEvent">,
-  wordId: string
-): string {
-  const claimEvent = state.lastClaimEvent;
-  if (!claimEvent || claimEvent.wordId !== wordId || claimEvent.source !== "pre-steal") {
-    return text;
-  }
-
-  const textWithoutPeriod = text.endsWith(".") ? text.slice(0, -1) : text;
-  if (claimEvent.movedToBottomOfPreStealPrecedence) {
-    return `${textWithoutPeriod} via pre-steal. Moved to bottom of pre-steal precedence.`;
-  }
-  return `${textWithoutPeriod} via pre-steal.`;
-}
-
-function reorderEntriesById<T extends { id: string }>(items: T[], draggedId: string, targetId: string): T[] {
-  if (draggedId === targetId) return items;
-  const sourceIndex = items.findIndex((item) => item.id === draggedId);
-  const targetIndex = items.findIndex((item) => item.id === targetId);
-  if (sourceIndex === -1 || targetIndex === -1) return items;
-
-  const next = [...items];
-  const [moved] = next.splice(sourceIndex, 1);
-  next.splice(targetIndex, 0, moved);
-  return next;
-}
-
-function buildReplayActionText(
-  replaySteps: NonNullable<GameState["replay"]>["steps"],
-  stepIndex: number
-): string {
-  const step = replaySteps[stepIndex];
-  if (!step) return "No replay action.";
-
-  const currentState = step.state;
-  const previousState = stepIndex > 0 ? replaySteps[stepIndex - 1]?.state ?? null : null;
-
-  if (step.kind === "flip-revealed") {
-    const previousCenterTileIds = new Set(previousState?.centerTiles.map((tile) => tile.id) ?? []);
-    const addedTiles = currentState.centerTiles.filter((tile) => !previousCenterTileIds.has(tile.id));
-    const flipperId = previousState?.pendingFlip?.playerId ?? previousState?.turnPlayerId ?? null;
-    const flipperName = getPlayerName(previousState?.players ?? currentState.players, flipperId);
-    if (addedTiles.length === 0) {
-      return `${flipperName} flipped a tile.`;
-    }
-    return addedTiles.map((tile) => `${flipperName} flipped ${tile.letter}.`).join(" ");
-  }
-
-  if (step.kind === "claim-succeeded") {
-    const claimWordDiff = getReplayClaimWordDiff(replaySteps, stepIndex);
-    if (!claimWordDiff) {
-      return "A word was claimed.";
-    }
-
-    const { currentState: claimCurrentState, addedWords, removedWords: claimRemovedWords } = claimWordDiff;
-    const removedWords = [...claimRemovedWords];
-
-    const lines: string[] = [];
-    for (const addedWord of addedWords) {
-      const claimantName = getPlayerName(claimCurrentState.players, addedWord.ownerId);
-      const replacedWord = findReplacedWord(addedWord, removedWords);
-      if (!replacedWord) {
-        lines.push(
-          appendPreStealLogContext(
-            `${claimantName} claimed ${addedWord.text}.`,
-            claimCurrentState,
-            addedWord.id
-          )
-        );
-        continue;
-      }
-
-      const removedWordIndex = removedWords.findIndex((word) => word.id === replacedWord.id);
-      if (removedWordIndex !== -1) {
-        removedWords.splice(removedWordIndex, 1);
-      }
-
-      if (replacedWord.ownerId === addedWord.ownerId) {
-        lines.push(
-          appendPreStealLogContext(
-            `${claimantName} extended ${replacedWord.text} to ${addedWord.text}.`,
-            claimCurrentState,
-            addedWord.id
-          )
-        );
-      } else {
-        const stolenFromName = getPlayerName(claimCurrentState.players, replacedWord.ownerId);
-        lines.push(
-          appendPreStealLogContext(
-            `${claimantName} stole ${replacedWord.text} from ${stolenFromName} with ${addedWord.text}.`,
-            claimCurrentState,
-            addedWord.id
-          )
-        );
-      }
-    }
-
-    if (lines.length > 0) {
-      return lines.join(" ");
-    }
-    return "A word was claimed.";
-  }
-
-  return "Replay action.";
-}
-
-function getReplayClaimWordDiff(
-  replaySteps: NonNullable<GameState["replay"]>["steps"],
-  stepIndex: number
-): {
-  currentState: ReplayStateSnapshot;
-  addedWords: WordSnapshot[];
-  removedWords: WordSnapshot[];
-} | null {
-  const step = replaySteps[stepIndex];
-  if (!step || step.kind !== "claim-succeeded") return null;
-  if (stepIndex <= 0) return null;
-
-  const currentState = step.state;
-  const previousState = replaySteps[stepIndex - 1]?.state ?? null;
-  if (!previousState) return null;
-
-  const previousWords = getWordSnapshots(previousState.players);
-  const currentWords = getWordSnapshots(currentState.players);
-  const previousWordMap = new Map(previousWords.map((word) => [word.id, word]));
-  const removedWords = previousWords.filter(
-    (word) => !currentWords.some((currentWord) => currentWord.id === word.id)
-  );
-  const addedWords = currentWords
-    .filter((word) => !previousWordMap.has(word.id))
-    .sort((a, b) => a.createdAt - b.createdAt);
-
-  return {
-    currentState,
-    addedWords,
-    removedWords
-  };
-}
-
-function buildPracticeSharePayloadFromReplayState(state: ReplayStateSnapshot): PracticeSharePayload {
-  const centerLetters = state.centerTiles
-    .map((tile) => normalizeEditorText(tile.letter))
-    .filter((letter) => letter.length === 1 && LETTER_PATTERN.test(letter))
-    .join("");
-  const existingWords = state.players.flatMap((player) =>
-    player.words
-      .map((word) => normalizeEditorText(word.text))
-      .filter((word) => word.length > 0 && LETTER_PATTERN.test(word))
-  );
-
-  return {
-    v: 2,
-    d: DEFAULT_PRACTICE_DIFFICULTY,
-    c: centerLetters,
-    w: existingWords
-  };
-}
+import {
+  CLAIM_FAILURE_MESSAGES,
+  CLAIM_FAILURE_WINDOW_MS,
+  CLAIM_WORD_ANIMATION_MS,
+  CUSTOM_PUZZLE_CENTER_LETTER_MAX,
+  CUSTOM_PUZZLE_CENTER_LETTER_MIN,
+  CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX,
+  CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MAX,
+  CUSTOM_PUZZLE_EXISTING_WORD_LENGTH_MIN,
+  CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX,
+  CUSTOM_PUZZLE_VALIDATION_TIMEOUT_MS,
+  DEFAULT_CLAIM_TIMER_SECONDS,
+  DEFAULT_FLIP_REVEAL_MS,
+  DEFAULT_FLIP_TIMER_SECONDS,
+  DEFAULT_PRACTICE_DIFFICULTY,
+  DEFAULT_PRACTICE_TIMER_SECONDS,
+  LETTER_PATTERN,
+  MAX_CLAIM_TIMER_SECONDS,
+  MAX_FLIP_TIMER_SECONDS,
+  MAX_LOG_ENTRIES,
+  MAX_PRACTICE_TIMER_SECONDS,
+  MIN_CLAIM_TIMER_SECONDS,
+  MIN_FLIP_TIMER_SECONDS,
+  MIN_PRACTICE_TIMER_SECONDS,
+  PENDING_RESULT_AUTO_SUBMIT_TTL_MS,
+  PRACTICE_RESULT_SHARE_QUERY_PARAM,
+  PRACTICE_SHARE_QUERY_PARAM,
+  PRACTICE_TIMER_WARNING_SECONDS,
+  REPLAY_ANALYSIS_DEFAULT_VISIBLE_OPTIONS,
+  REPLAY_ANALYSIS_TIMEOUT_MS,
+  REPLAY_FILE_INPUT_ACCEPT
+} from "./app/constants";
+import {
+  socket,
+  generateId
+} from "./app/network/socketClient";
+import {
+  persistPlayerName,
+  readStoredPlayerName,
+  sanitizeClientName
+} from "./app/storage/playerIdentity";
+import {
+  buildPracticePuzzleFingerprintFromState,
+  buildPrivateRoomInviteUrl,
+  readPendingPrivateRoomJoinFromUrl,
+  readPendingSharedLaunchFromUrl,
+  removePracticeShareFromUrl,
+  removePrivateRoomJoinFromUrl
+} from "./app/share/shareUrl";
+import {
+  buildPracticeSharePayloadFromReplayState,
+  clampClaimTimerSeconds,
+  clampFlipTimerSeconds,
+  clampPracticeDifficulty,
+  clampPracticeTimerSeconds,
+  createInactivePracticeState,
+  getPracticeResultCategory,
+  normalizeEditorText
+} from "./app/practice/practiceUtils";
+import {
+  buildReplayActionText,
+  getReplayClaimWordDiff
+} from "./app/replay/replayUtils";
+import {
+  appendPreStealLogContext,
+  findReplacedWord,
+  formatLogTime,
+  formatTime,
+  getPlayerName,
+  getWordSnapshots,
+  reorderEntriesById
+} from "./app/game/gameUtils";
+import type {
+  ClaimFailureContext,
+  EditorPuzzleDraft,
+  GameLogEntry,
+  PendingGameLogEntry,
+  PendingPrivateRoomJoin,
+  PendingResultAutoSubmit,
+  PendingSharedLaunch,
+  ReplaySource,
+  WordHighlightKind
+} from "./app/types";
+import { NameGateView } from "./app/views/NameGateView";
+import { LobbyListView } from "./app/views/LobbyListView";
+import { LobbyCreateView } from "./app/views/LobbyCreateView";
+import { PracticeEditorView } from "./app/views/PracticeEditorView";
+import { PracticeView } from "./app/views/PracticeView";
+import { GameView } from "./app/views/GameView";
+import { ReplayPanelView } from "./app/views/ReplayPanelView";
+import { EndedGameView } from "./app/views/EndedGameView";
+import { PracticeStartModal } from "./app/views/modals/PracticeStartModal";
+import { SettingsModal } from "./app/views/modals/SettingsModal";
+import { LeaveGameModal } from "./app/views/modals/LeaveGameModal";
 
 export default function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
@@ -2464,238 +2010,46 @@ export default function App() {
   const replayBackButtonLabel = roomState?.status === "ended" ? "Back to final scores" : "Close replay";
   const replayPanelContent =
     isReplayMode && activeReplayState ? (
-      <div className="replay-panel">
-        <div className="button-row">
-          <button className="button-secondary" onClick={handleExitReplayView}>
-            {replayBackButtonLabel}
-          </button>
-          {roomState && (
-            <button className="button-secondary" onClick={handleLeaveRoom}>
-              Return to lobby
-            </button>
-          )}
-        </div>
-        <div className="replay-controls">
-          <button
-            className="button-secondary"
-            onClick={() => setReplayStepIndex(0)}
-            disabled={clampedReplayStepIndex <= 0}
-          >
-            Start
-          </button>
-          <button
-            className="button-secondary"
-            onClick={() => setReplayStepIndex((current) => Math.max(0, current - 1))}
-            disabled={clampedReplayStepIndex <= 0}
-          >
-            Prev
-          </button>
-          <span className="replay-step-label">
-            Step {clampedReplayStepIndex + 1} / {replaySteps.length}
-          </span>
-          <button
-            className="button-secondary"
-            onClick={() => setReplayStepIndex((current) => Math.min(maxReplayStepIndex, current + 1))}
-            disabled={clampedReplayStepIndex >= maxReplayStepIndex}
-          >
-            Next
-          </button>
-          <button
-            className="button-secondary"
-            onClick={() => setReplayStepIndex(maxReplayStepIndex)}
-            disabled={clampedReplayStepIndex >= maxReplayStepIndex}
-          >
-            End
-          </button>
-          <button
-            className="button-secondary"
-            onClick={() => setIsReplayAnalysisOpen((current) => !current)}
-          >
-            {isReplayAnalysisOpen ? "Hide analysis" : "Show analysis"}
-          </button>
-          <button className="button-secondary" onClick={handleOpenReplayImport}>
-            Import replay
-          </button>
-          <button className="button-secondary" onClick={handleViewReplayAsPuzzle}>
-            View as Puzzle
-          </button>
-          {canExportReplay && (
-            <button className="button-secondary" onClick={handleExportReplay}>
-              Export replay (.json)
-            </button>
-          )}
-        </div>
-        {replayPuzzleError && (
-          <div className="replay-import-error" role="alert">
-            {replayPuzzleError}
-          </div>
-        )}
-        {importReplayError && (
-          <div className="replay-import-error" role="alert">
-            {importReplayError}
-          </div>
-        )}
-        <div className="replay-board-layout">
-          <section className="replay-board">
-            <div className="replay-board-header">
-              <div>
-                <h3>Replay Board</h3>
-                <p className="muted">{activeReplayActionText}</p>
-              </div>
-              <div className="turn">
-                <span>Turn:</span>
-                <strong>{replayTurnPlayerName}</strong>
-              </div>
-            </div>
-            <p className="muted">Bag: {activeReplayState.bagCount} tiles</p>
-            {activeReplayState.pendingFlip && (
-              <p className="muted">
-                {getPlayerName(activeReplayState.players, activeReplayState.pendingFlip.playerId)} is revealing a
-                tile...
-              </p>
-            )}
-            <div className="tiles">
-              {activeReplayState.centerTiles.length === 0 && (
-                <div className="muted">No tiles flipped yet.</div>
-              )}
-              {activeReplayState.centerTiles.map((tile) => (
-                <div key={tile.id} className="tile">
-                  {tile.letter}
-                </div>
-              ))}
-            </div>
-            <div className="words board-words">
-              {orderedReplayPlayers.map((player) => (
-                <ReplayWordList key={player.id} player={player} />
-              ))}
-            </div>
-          </section>
-          <section className="replay-scoreboard">
-            <h3>Players</h3>
-            <div className="player-list">
-              {orderedReplayPlayers.map((player) => (
-                <div key={player.id} className="player">
-                  <div>
-                    <strong>{player.name}</strong>
-                    {player.id === activeReplayState.turnPlayerId && <span className="badge">turn</span>}
-                  </div>
-                  <span className="score">{player.score}</span>
-                </div>
-              ))}
-            </div>
-            {activeReplayState.preStealEnabled && (
-              <div className="pre-steal-panel replay-pre-steal-panel">
-                <div className="pre-steal-entries-column">
-                  <div className="word-header">
-                    <span>Pre-steal entries</span>
-                  </div>
-                  {replayPreStealPlayers.map((player) => (
-                    <div key={player.id} className="word-list">
-                      <div className="word-header">
-                        <span>{player.name}</span>
-                      </div>
-                      {player.preStealEntries.length === 0 && (
-                        <div className="muted">No entries.</div>
-                      )}
-                      {player.preStealEntries.map((entry) => (
-                        <div key={entry.id} className="pre-steal-entry">
-                          <span className="pre-steal-entry-text">
-                            {entry.triggerLetters}
-                            {" -> "}
-                            {entry.claimWord}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
-        {isReplayAnalysisOpen && (
-          <section className="replay-analysis-panel">
-            <div className="replay-analysis-header">
-              <h3>Best moves</h3>
-              {activeReplayAnalysis && (
-                <span className="score">Best score: {activeReplayAnalysis.bestScore}</span>
-              )}
-            </div>
-            {isActiveReplayAnalysisLoading && <div className="muted">Analyzing this replay step...</div>}
-            {!isActiveReplayAnalysisLoading && replayAnalysisError && (
-              <div className="practice-submit-error" role="alert">
-                {replayAnalysisError}
-              </div>
-            )}
-            {!isActiveReplayAnalysisLoading && !replayAnalysisError && activeReplayAnalysis && (
-              <>
-                <p className="muted">
-                  {activeReplayAnalysis.basis === "before-claim"
-                    ? "Analyzed from state before this claim."
-                    : "Analyzed from this revealed-tile state."}
-                </p>
-                <div className="practice-options">
-                  {visibleReplayAnalysisOptions.map((option) => (
-                    <div
-                      key={`${activeReplayAnalysis.requestedStepIndex}-${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
-                      className={getReplayPracticeOptionClassName(option, activeReplayClaimedWords)}
-                    >
-                      <div>
-                        <strong>{formatPracticeOptionLabel(option)}</strong>
-                      </div>
-                      <span className="score">{option.score}</span>
-                    </div>
-                  ))}
-                  {hiddenReplayAnalysisOptionCount > 0 &&
-                    !showAllReplayOptionsByStep[activeReplayAnalysis.requestedStepIndex] && (
-                      <button
-                        type="button"
-                        className="practice-option-more"
-                        onClick={() =>
-                          setShowAllReplayOptionsByStep((current) => ({
-                            ...current,
-                            [activeReplayAnalysis.requestedStepIndex]: true
-                          }))
-                        }
-                      >
-                        more
-                      </button>
-                    )}
-                  {activeReplayAnalysis.allOptions.length === 0 && (
-                    <div className="muted">No valid moves from this position.</div>
-                  )}
-                </div>
-              </>
-            )}
-          </section>
-        )}
-      </div>
+      <ReplayPanelView
+        replayBackButtonLabel={replayBackButtonLabel}
+        roomState={roomState}
+        onExitReplayView={handleExitReplayView}
+        onLeaveRoom={handleLeaveRoom}
+        onOpenReplayImport={handleOpenReplayImport}
+        onViewReplayAsPuzzle={handleViewReplayAsPuzzle}
+        onExportReplay={handleExportReplay}
+        canExportReplay={canExportReplay}
+        clampedReplayStepIndex={clampedReplayStepIndex}
+        replayStepsLength={replaySteps.length}
+        maxReplayStepIndex={maxReplayStepIndex}
+        setReplayStepIndex={setReplayStepIndex}
+        isReplayAnalysisOpen={isReplayAnalysisOpen}
+        setIsReplayAnalysisOpen={setIsReplayAnalysisOpen}
+        replayPuzzleError={replayPuzzleError}
+        importReplayError={importReplayError}
+        activeReplayActionText={activeReplayActionText}
+        replayTurnPlayerName={replayTurnPlayerName}
+        activeReplayState={activeReplayState}
+        orderedReplayPlayers={orderedReplayPlayers}
+        replayPreStealPlayers={replayPreStealPlayers}
+        activeReplayAnalysis={activeReplayAnalysis}
+        isActiveReplayAnalysisLoading={isActiveReplayAnalysisLoading}
+        replayAnalysisError={replayAnalysisError}
+        visibleReplayAnalysisOptions={visibleReplayAnalysisOptions}
+        activeReplayClaimedWords={activeReplayClaimedWords}
+        hiddenReplayAnalysisOptionCount={hiddenReplayAnalysisOptionCount}
+        showAllReplayOptionsByStep={showAllReplayOptionsByStep}
+        setShowAllReplayOptionsByStep={setShowAllReplayOptionsByStep}
+      />
     ) : null;
 
   if (!playerName) {
     return (
-      <div className="name-gate">
-        <div className="name-card">
-          <h1>Choose your name</h1>
-          <p className="muted">This is how other players will see you.</p>
-          <input
-            className="name-input"
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing && nameDraft.trim()) {
-                e.preventDefault();
-                handleConfirmName();
-              }
-            }}
-            placeholder="Type your name"
-            autoFocus
-          />
-          <button onClick={handleConfirmName} disabled={!nameDraft.trim()}>
-            Enter Lobby
-          </button>
-        </div>
-      </div>
+      <NameGateView
+        nameDraft={nameDraft}
+        setNameDraft={setNameDraft}
+        onConfirmName={handleConfirmName}
+      />
     );
   }
 
@@ -2730,493 +2084,105 @@ export default function App() {
         </header>
 
       {!roomState && !practiceState.active && !isReplayMode && lobbyView === "list" && (
-        <div className="grid lobby-grid">
-          <section className="panel">
-            <h2>Open Games</h2>
-            <div className="room-list">
-              {openLobbyRooms.length === 0 && <p className="muted">No open games yet.</p>}
-              {openLobbyRooms.map((room) => {
-                const isFull = room.playerCount >= room.maxPlayers;
-                return (
-                  <div key={room.id} className="room-card">
-                    <div>
-                      <strong>{room.name}</strong>
-                      <div className="muted">
-                        {room.playerCount} / {room.maxPlayers} • {room.isPublic ? "public" : "private"}
-                      </div>
-                    </div>
-                    <button onClick={() => handleJoinRoom(room)} disabled={isFull}>
-                      {isFull ? "Full" : "Join"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="button-row">
-              <button onClick={() => setLobbyView("create")}>Create new game</button>
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2>Games in Progress</h2>
-            <div className="room-list">
-              {inProgressLobbyRooms.length === 0 && <p className="muted">No games in progress.</p>}
-              {inProgressLobbyRooms.map((room) => (
-                <div key={room.id} className="room-card">
-                  <div>
-                    <strong>{room.name}</strong>
-                    <div className="muted">
-                      {room.playerCount} / {room.maxPlayers} • in progress
-                    </div>
-                  </div>
-                  <button className="button-secondary" onClick={() => handleSpectateRoom(room)}>
-                    Spectate
-                  </button>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2>Practice Mode</h2>
-            <p className="muted">
-              Train solo on one puzzle at a time. Submit your best play, then review every possible claim
-              and score.
-            </p>
-            {lobbyError && (
-              <div className="practice-editor-error" role="alert">
-                {lobbyError}
-              </div>
-            )}
-            <div className="button-row">
-              <button onClick={handleStartPractice}>Start practice</button>
-              <button className="button-secondary" onClick={handleOpenPracticeEditor}>
-                Create custom puzzle
-              </button>
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2>Replays</h2>
-            <p className="muted">Import a replay file to review a completed game step-by-step.</p>
-            <div className="button-row">
-              <button className="button-secondary" onClick={handleOpenReplayImport}>
-                Import replay
-              </button>
-            </div>
-            {importReplayError && (
-              <div className="replay-import-error" role="alert">
-                {importReplayError}
-              </div>
-            )}
-          </section>
-        </div>
+        <LobbyListView
+          openLobbyRooms={openLobbyRooms}
+          inProgressLobbyRooms={inProgressLobbyRooms}
+          lobbyError={lobbyError}
+          importReplayError={importReplayError}
+          onJoinRoom={handleJoinRoom}
+          onSpectateRoom={handleSpectateRoom}
+          onCreateNewGame={() => setLobbyView("create")}
+          onStartPractice={handleStartPractice}
+          onOpenPracticeEditor={handleOpenPracticeEditor}
+          onOpenReplayImport={handleOpenReplayImport}
+        />
       )}
 
       {!roomState && !practiceState.active && !isReplayMode && lobbyView === "create" && (
-        <div className="grid">
-          <section className="panel panel-narrow">
-            <h2>New Game</h2>
-            <label>
-              Room name
-              <input
-                value={createRoomName}
-                onChange={(e) => setCreateRoomName(e.target.value)}
-                placeholder="Friday Night"
-              />
-            </label>
-            <label className="row">
-              <span>Public room</span>
-              <input
-                type="checkbox"
-                checked={createPublic}
-                onChange={(e) => setCreatePublic(e.target.checked)}
-              />
-            </label>
-            <label>
-              Max players (2-8)
-              <input
-                type="number"
-                min={2}
-                max={8}
-                value={createMaxPlayers}
-                onChange={(e) => setCreateMaxPlayers(Number(e.target.value))}
-              />
-            </label>
-            <label className="row">
-              <span>Flip timer</span>
-              <input
-                type="checkbox"
-                checked={createFlipTimerEnabled}
-                onChange={(e) => setCreateFlipTimerEnabled(e.target.checked)}
-              />
-            </label>
-            <label>
-              Flip timer seconds (1-60)
-              <input
-                type="number"
-                min={MIN_FLIP_TIMER_SECONDS}
-                max={MAX_FLIP_TIMER_SECONDS}
-                value={createFlipTimerSeconds}
-                onChange={(e) => setCreateFlipTimerSeconds(Number(e.target.value))}
-                onBlur={() =>
-                  setCreateFlipTimerSeconds((current) => clampFlipTimerSeconds(current))
-                }
-                disabled={!createFlipTimerEnabled}
-              />
-            </label>
-            <label>
-              Claim timer seconds (1-10)
-              <input
-                type="number"
-                min={MIN_CLAIM_TIMER_SECONDS}
-                max={MAX_CLAIM_TIMER_SECONDS}
-                value={createClaimTimerSeconds}
-                onChange={(e) => setCreateClaimTimerSeconds(Number(e.target.value))}
-                onBlur={() =>
-                  setCreateClaimTimerSeconds((current) => clampClaimTimerSeconds(current))
-                }
-              />
-            </label>
-            <label className="row">
-              <span>Enable pre-steal</span>
-              <input
-                type="checkbox"
-                checked={createPreStealEnabled}
-                onChange={(event) => setCreatePreStealEnabled(event.target.checked)}
-              />
-            </label>
-            <div className="button-row">
-              <button className="button-secondary" onClick={() => setLobbyView("list")}>
-                Back to games
-              </button>
-              <button onClick={handleCreate}>Create game</button>
-            </div>
-          </section>
-
-        </div>
+        <LobbyCreateView
+          createRoomName={createRoomName}
+          setCreateRoomName={setCreateRoomName}
+          createPublic={createPublic}
+          setCreatePublic={setCreatePublic}
+          createMaxPlayers={createMaxPlayers}
+          setCreateMaxPlayers={setCreateMaxPlayers}
+          createFlipTimerEnabled={createFlipTimerEnabled}
+          setCreateFlipTimerEnabled={setCreateFlipTimerEnabled}
+          createFlipTimerSeconds={createFlipTimerSeconds}
+          setCreateFlipTimerSeconds={setCreateFlipTimerSeconds}
+          createClaimTimerSeconds={createClaimTimerSeconds}
+          setCreateClaimTimerSeconds={setCreateClaimTimerSeconds}
+          createPreStealEnabled={createPreStealEnabled}
+          setCreatePreStealEnabled={setCreatePreStealEnabled}
+          minFlipTimerSeconds={MIN_FLIP_TIMER_SECONDS}
+          maxFlipTimerSeconds={MAX_FLIP_TIMER_SECONDS}
+          minClaimTimerSeconds={MIN_CLAIM_TIMER_SECONDS}
+          maxClaimTimerSeconds={MAX_CLAIM_TIMER_SECONDS}
+          clampFlipTimerSeconds={clampFlipTimerSeconds}
+          clampClaimTimerSeconds={clampClaimTimerSeconds}
+          onBackToGames={() => setLobbyView("list")}
+          onCreate={handleCreate}
+        />
       )}
 
       {!roomState && !practiceState.active && !isReplayMode && lobbyView === "editor" && (
-        <div className="grid">
-          <section className="panel panel-narrow practice-editor">
-            <h2>Custom Practice Puzzle</h2>
-            <p className="muted">
-              Pick center tiles and existing words, then play this exact puzzle or share it as a link.
-            </p>
-
-            <div className="practice-editor-fields">
-              <div className="practice-difficulty-control" aria-label="Custom puzzle difficulty">
-                <span>Difficulty</span>
-                <div className="practice-difficulty-segmented" role="group" aria-label="Custom puzzle difficulty">
-                  {[1, 2, 3, 4, 5].map((level) => (
-                    <button
-                      key={level}
-                      type="button"
-                      className={
-                        editorDifficulty === level ? "practice-difficulty-option active" : "practice-difficulty-option"
-                      }
-                      onClick={() => setEditorDifficulty(level as PracticeDifficulty)}
-                      aria-pressed={editorDifficulty === level}
-                    >
-                      {level}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <label>
-                Center tiles (A-Z)
-                <input
-                  value={editorCenterInput}
-                  onChange={(event) => setEditorCenterInput(event.target.value)}
-                  placeholder="TEAM"
-                />
-              </label>
-
-              <label>
-                Existing words (one per line)
-                <textarea
-                  value={editorExistingWordsInput}
-                  onChange={(event) => setEditorExistingWordsInput(event.target.value)}
-                  placeholder={"RATE\nALERT"}
-                  rows={6}
-                />
-              </label>
-
-              <p className="muted practice-editor-stats">
-                Center: {editorPuzzleDraft.normalizedCenter.length}/{CUSTOM_PUZZLE_CENTER_LETTER_MAX} letters ·
-                Existing words: {editorPuzzleDraft.normalizedExistingWords.length}/
-                {CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX} · Total chars: {editorTotalCharacters}/
-                {CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX}
-              </p>
-
-              {(editorValidationMessage || lobbyError) && (
-                <div className="practice-editor-error" role="alert">
-                  {editorValidationMessage ?? lobbyError}
-                </div>
-              )}
-            </div>
-
-            <div className="button-row">
-              <button
-                className="button-secondary"
-                onClick={() => {
-                  setLobbyError(null);
-                  setEditorValidationMessageFromServer(null);
-                  setEditorShareStatus(null);
-                  setIsEditorShareValidationInFlight(false);
-                  setLobbyView("list");
-                }}
-              >
-                Back to lobby
-              </button>
-              <button onClick={handlePlayEditorPuzzle} disabled={!isEditorPuzzleReady}>
-                Play puzzle
-              </button>
-              <button
-                className="button-secondary"
-                onClick={handleShareEditorPuzzle}
-                disabled={!isEditorPuzzleReady || isEditorShareValidationInFlight}
-              >
-                {isEditorShareValidationInFlight
-                  ? "Validating..."
-                  : editorShareStatus === "copied"
-                    ? "Copied!"
-                    : editorShareStatus === "failed"
-                      ? "Copy failed"
-                      : "Share link"}
-              </button>
-            </div>
-          </section>
-        </div>
+        <PracticeEditorView
+          editorDifficulty={editorDifficulty}
+          setEditorDifficulty={setEditorDifficulty}
+          editorCenterInput={editorCenterInput}
+          setEditorCenterInput={setEditorCenterInput}
+          editorExistingWordsInput={editorExistingWordsInput}
+          setEditorExistingWordsInput={setEditorExistingWordsInput}
+          editorPuzzleDraft={editorPuzzleDraft}
+          editorTotalCharacters={editorTotalCharacters}
+          customPuzzleCenterLetterMax={CUSTOM_PUZZLE_CENTER_LETTER_MAX}
+          customPuzzleExistingWordCountMax={CUSTOM_PUZZLE_EXISTING_WORD_COUNT_MAX}
+          customPuzzleTotalCharactersMax={CUSTOM_PUZZLE_TOTAL_CHARACTERS_MAX}
+          editorValidationMessage={editorValidationMessage}
+          lobbyError={lobbyError}
+          isEditorPuzzleReady={isEditorPuzzleReady}
+          isEditorShareValidationInFlight={isEditorShareValidationInFlight}
+          editorShareStatus={editorShareStatus}
+          onBackToLobby={() => {
+            setLobbyError(null);
+            setEditorValidationMessageFromServer(null);
+            setEditorShareStatus(null);
+            setIsEditorShareValidationInFlight(false);
+            setLobbyView("list");
+          }}
+          onPlayPuzzle={handlePlayEditorPuzzle}
+          onSharePuzzle={handleShareEditorPuzzle}
+        />
       )}
 
       {isInPractice && (
-        <div className="practice">
-          <section className="panel practice-board">
-            <div className="practice-header">
-              <div>
-                <h2>Practice Mode</h2>
-                <p className="muted">Current puzzle difficulty: {practiceState.currentDifficulty}</p>
-              </div>
-              <div className="practice-header-actions">
-                {practicePuzzle && (
-                  <div className="practice-share-action">
-                    <button className="button-secondary" type="button" onClick={handleSharePracticePuzzle}>
-                      {practiceShareStatus === "copied"
-                        ? "Copied!"
-                        : practiceShareStatus === "failed"
-                          ? "Copy failed"
-                          : "Share"}
-                    </button>
-                  </div>
-                )}
-                {practicePuzzle &&
-                  practiceState.phase === "result" &&
-                  practiceResult &&
-                  !practiceResult.timedOut &&
-                  practiceResult.submittedWordNormalized && (
-                  <div className="practice-share-action">
-                    <button className="button-secondary" type="button" onClick={handleSharePracticeResult}>
-                      {practiceResultShareStatus === "copied"
-                        ? "Copied!"
-                        : practiceResultShareStatus === "failed"
-                          ? "Copy failed"
-                          : "Share result"}
-                    </button>
-                  </div>
-                )}
-                {practiceState.phase === "result" && practiceResult && (
-                  <>
-                    <div className="practice-difficulty-control" aria-label="Next puzzle difficulty">
-                      <div className="practice-difficulty-segmented" role="group">
-                        {[1, 2, 3, 4, 5].map((level) => (
-                          <button
-                            key={level}
-                            type="button"
-                            className={
-                              practiceState.queuedDifficulty === level
-                                ? "practice-difficulty-option active"
-                                : "practice-difficulty-option"
-                            }
-                            onClick={() => handlePracticeDifficultyChange(level)}
-                            aria-pressed={practiceState.queuedDifficulty === level}
-                          >
-                            {level}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <button onClick={handlePracticeNext}>Next Puzzle</button>
-                  </>
-                )}
-                <button className="button-secondary" onClick={handlePracticeExit}>
-                  Exit Practice
-                </button>
-              </div>
-            </div>
-
-            {practicePuzzle ? (
-              <div
-                className={
-                  practiceState.phase === "result" && practiceResult
-                    ? "practice-content result-layout"
-                    : "practice-content"
-                }
-              >
-                <div className="practice-puzzle-panel">
-                  <div>
-                    <h3>Center Tiles</h3>
-                  </div>
-                  <div className="tiles">
-                    {practicePuzzle.centerTiles.map((tile) => (
-                      <div key={tile.id} className="tile">
-                        {tile.letter}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="word-list practice-existing-words">
-                    <div className="word-header">
-                      <span>Existing words</span>
-                      <span className="muted">{practicePuzzle.existingWords.length}</span>
-                    </div>
-                    {practicePuzzle.existingWords.length === 0 && (
-                      <div className="muted">No existing words in this puzzle.</div>
-                    )}
-                    {practicePuzzle.existingWords.map((word) => (
-                      <div key={word.id} className="word-item">
-                        <div className="word-tiles" aria-label={word.text}>
-                          {word.text.split("").map((letter, index) => (
-                            <div key={`${word.id}-${index}`} className="tile word-tile">
-                              {letter.toUpperCase()}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {practiceState.phase === "puzzle" && (
-                    <>
-                      {practiceTimerRemainingSeconds !== null && (
-                        <div
-                          className={`practice-puzzle-timer ${isPracticeTimerWarning ? "warning" : ""}`}
-                          role="progressbar"
-                          aria-label="Practice puzzle timer"
-                          aria-valuemin={0}
-                          aria-valuemax={practiceState.timerSeconds}
-                          aria-valuenow={practiceTimerRemainingSeconds}
-                        >
-                          <div className="practice-puzzle-timer-header">
-                            <span>Time remaining</span>
-                            <strong>{practiceTimerRemainingSeconds}s</strong>
-                          </div>
-                          <div className="practice-puzzle-timer-track">
-                            <div
-                              className="practice-puzzle-timer-progress"
-                              style={{ width: `${practiceTimerProgress * 100}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                      <div className="claim-box">
-                        <div className="claim-input">
-                          <input
-                            ref={practiceInputRef}
-                            value={practiceWord}
-                            onChange={(event) => {
-                              setPracticeWord(event.target.value);
-                              if (practiceSubmitError) {
-                                setPracticeSubmitError(null);
-                              }
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                                event.preventDefault();
-                                handlePracticeSubmit();
-                              }
-                            }}
-                            placeholder="Enter your best play"
-                          />
-                          <button onClick={handlePracticeSubmit} disabled={!practiceWord.trim()}>
-                            Submit
-                          </button>
-                        </div>
-                        {practiceSubmitError && (
-                          <div className="practice-submit-error" role="alert">
-                            {practiceSubmitError}
-                          </div>
-                        )}
-                      </div>
-                      <div className="button-row">
-                        <button className="button-secondary" onClick={handlePracticeSkip}>
-                          Skip Puzzle
-                        </button>
-                        <button className="button-secondary" onClick={handlePracticeExit}>
-                          Exit Practice
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {practiceState.phase === "result" && practiceResult && (
-                  <div className="practice-result-panel">
-                    <div className="practice-result">
-                      <div className="practice-result-summary">
-                        <div className="practice-result-summary-header">
-                          <h3>Result</h3>
-                          {practiceResultCategory && (
-                            <span
-                              className={`practice-result-badge practice-result-badge-${practiceResultCategory.key}`}
-                            >
-                              {practiceResultCategory.label}
-                            </span>
-                          )}
-                        </div>
-                        <p>
-                          <strong>
-                            {practiceResult.timedOut
-                              ? "Time's up"
-                              : practiceResult.submittedWordNormalized || "(empty)"}
-                          </strong>{" "}
-                          ({practiceResult.score}/{practiceResult.bestScore})
-                        </p>
-                      </div>
-
-                      <div className="practice-options">
-                        {visiblePracticeOptions.map((option) => (
-                          <div
-                            key={`${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
-                            className={getPracticeOptionClassName(option, practiceResult.submittedWordNormalized)}
-                          >
-                            <div>
-                              <strong>{formatPracticeOptionLabel(option)}</strong>
-                            </div>
-                            <span className="score">{option.score}</span>
-                          </div>
-                        ))}
-                        {hiddenPracticeOptionCount > 0 && !showAllPracticeOptions && (
-                          <button
-                            type="button"
-                            className="practice-option-more"
-                            onClick={() => setShowAllPracticeOptions(true)}
-                          >
-                            more
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="muted">Loading puzzle...</div>
-            )}
-          </section>
-        </div>
+        <PracticeView
+          practiceState={practiceState}
+          practicePuzzle={practicePuzzle}
+          practiceResult={practiceResult}
+          practiceShareStatus={practiceShareStatus}
+          practiceResultShareStatus={practiceResultShareStatus}
+          onSharePracticePuzzle={handleSharePracticePuzzle}
+          onSharePracticeResult={handleSharePracticeResult}
+          onPracticeDifficultyChange={handlePracticeDifficultyChange}
+          onPracticeNext={handlePracticeNext}
+          onPracticeExit={handlePracticeExit}
+          practiceTimerRemainingSeconds={practiceTimerRemainingSeconds}
+          isPracticeTimerWarning={isPracticeTimerWarning}
+          practiceTimerProgress={practiceTimerProgress}
+          practiceWord={practiceWord}
+          setPracticeWord={setPracticeWord}
+          practiceSubmitError={practiceSubmitError}
+          setPracticeSubmitError={setPracticeSubmitError}
+          onPracticeSubmit={handlePracticeSubmit}
+          onPracticeSkip={handlePracticeSkip}
+          practiceInputRef={practiceInputRef}
+          practiceResultCategory={practiceResultCategory}
+          visiblePracticeOptions={visiblePracticeOptions}
+          hiddenPracticeOptionCount={hiddenPracticeOptionCount}
+          showAllPracticeOptions={showAllPracticeOptions}
+          setShowAllPracticeOptions={setShowAllPracticeOptions}
+        />
       )}
 
       {roomState && roomState.status === "lobby" && (
@@ -3271,281 +2237,60 @@ export default function App() {
         </div>
       )}
 
-      {isInGame && gameState && (
-        <div className="game">
-          <section className="panel game-board">
-            <div className="game-header">
-              <div>
-                <h2>Center Tiles</h2>
-                <p className="muted">Bag: {gameState.bagCount} tiles</p>
-                {roomState?.flipTimer.enabled && (
-                  <p className="muted">Auto flip: {roomState.flipTimer.seconds}s</p>
-                )}
-              </div>
-              <div className="turn">
-                <span>Turn:</span>
-                <strong>
-                  {gameState.players.find((p) => p.id === gameState.turnPlayerId)?.name || "Unknown"}
-                </strong>
-                <button
-                  onClick={handleFlip}
-                  disabled={isSpectator || gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive}
-                >
-                  Flip Tile
-                </button>
-              </div>
-            </div>
-
-            {endTimerRemaining !== null && (
-              <div className="timer">End in {formatTime(endTimerRemaining)}</div>
-            )}
-
-            <div className="tiles">
-              {gameState.centerTiles.length === 0 && !pendingFlip && (
-                <div className="muted">No tiles flipped yet.</div>
-              )}
-              {gameState.centerTiles.map((tile) => (
-                <div
-                  key={tile.id}
-                  className={isTileSelectionEnabled ? "tile tile-selectable" : "tile"}
-                  role={isTileSelectionEnabled ? "button" : undefined}
-                  tabIndex={isTileSelectionEnabled ? 0 : undefined}
-                  onClick={
-                    isTileSelectionEnabled ? () => handleClaimTileSelect(tile.letter) : undefined
-                  }
-                  onKeyDown={
-                    isTileSelectionEnabled
-                      ? (event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            handleClaimTileSelect(tile.letter);
-                          }
-                        }
-                      : undefined
-                  }
-                  aria-label={
-                    isTileSelectionEnabled ? `Use letter ${tile.letter} for claim` : undefined
-                  }
-                >
-                  {tile.letter}
-                </div>
-              ))}
-              {pendingFlip && (
-                <div
-                  className="tile tile-reveal-card"
-                  style={{
-                    animationDuration: `${flipRevealDurationMs}ms`,
-                    animationDelay: `-${flipRevealElapsedMs}ms`
-                  }}
-                  aria-live="polite"
-                  aria-label={`${flipRevealPlayerName} is revealing the next tile`}
-                >
-                  ?
-                </div>
-              )}
-            </div>
-
-            <div className="claim-box">
-              <div
-                className={`claim-timer ${claimWindow ? "" : "placeholder"}`}
-                role={claimWindow ? "progressbar" : undefined}
-                aria-label={claimWindow ? "Claim timer" : undefined}
-                aria-valuemin={claimWindow ? 0 : undefined}
-                aria-valuemax={claimWindow ? 100 : undefined}
-                aria-valuenow={claimWindow ? Math.round(claimProgress * 100) : undefined}
-                aria-hidden={!claimWindow}
-              >
-                <div
-                  className="claim-progress"
-                  style={{ width: `${claimWindow ? claimProgress * 100 : 0}%` }}
-                />
-              </div>
-              <div className="claim-input">
-                <input
-                  ref={claimInputRef}
-                  value={claimWord}
-                  onChange={(e) => setClaimWord(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      if (isMyClaimWindow) {
-                        handleClaimSubmit();
-                        return;
-                      }
-                      handleClaimIntent();
-                    }
-                  }}
-                  placeholder={claimPlaceholder}
-                  disabled={isClaimInputDisabled}
-                />
-                <button
-                  onClick={isMyClaimWindow ? handleClaimSubmit : handleClaimIntent}
-                  disabled={isClaimButtonDisabled}
-                >
-                  {claimButtonLabel}
-                </button>
-              </div>
-            </div>
-
-            <div className="words board-words">
-              {orderedGamePlayers.map((player) => (
-                <WordList
-                  key={player.id}
-                  player={player}
-                  isSelf={player.id === selfPlayerId}
-                  highlightedWordIds={claimedWordHighlights}
-                  onTileLetterSelect={handleClaimTileSelect}
-                />
-              ))}
-            </div>
-          </section>
-
-          <section className="panel scoreboard">
-            <div className="scoreboard-header">
-              <h2>Players</h2>
-              <button className="button-danger" onClick={() => setShowLeaveGameConfirm(true)}>
-                {isSpectator ? "Leave Spectate" : "Leave Game"}
-              </button>
-            </div>
-            <div className="player-list">
-              {orderedGamePlayers.map((player) => (
-                <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
-                  <div>
-                    <strong>{player.name}</strong>
-                    {player.id === gameState.turnPlayerId && <span className="badge">turn</span>}
-                    {!player.connected && <span className="badge">offline</span>}
-                  </div>
-                  <span className="score">{player.score}</span>
-                </div>
-              ))}
-            </div>
-
-            {gameState.preStealEnabled && (
-              <div className="pre-steal-panel">
-                {isSpectator ? (
-                  <div className="pre-steal-entries-column">
-                    <div className="word-header">
-                      <span>Pre-steal entries</span>
-                    </div>
-                    {spectatorPreStealPlayers.map((player) => (
-                      <div key={player.id} className="word-list">
-                        <div className="word-header">
-                          <span>{player.name}</span>
-                          {!player.connected && <span className="badge">offline</span>}
-                        </div>
-                        {player.preStealEntries.length === 0 && (
-                          <div className="muted">No entries.</div>
-                        )}
-                        {player.preStealEntries.map((entry) => (
-                          <div key={entry.id} className="pre-steal-entry">
-                            <span className="pre-steal-entry-text">
-                              {entry.triggerLetters}
-                              {" -> "}
-                              {entry.claimWord}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="pre-steal-entries-column">
-                    <div className="word-header">
-                      <span>Your pre-steal entries</span>
-                    </div>
-                    <div className="pre-steal-entry-form">
-                      <input
-                        value={preStealTriggerInput}
-                        onChange={(event) => setPreStealTriggerInput(event.target.value)}
-                        placeholder="Trigger letters"
-                      />
-                      <input
-                        value={preStealClaimWordInput}
-                        onChange={(event) => setPreStealClaimWordInput(event.target.value)}
-                        placeholder="Claim word"
-                      />
-                      <button
-                        className="button-secondary"
-                        onClick={handleAddPreStealEntry}
-                        disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
-                      >
-                        Add
-                      </button>
-                    </div>
-
-                    {myPreStealEntries.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="pre-steal-entry self"
-                        draggable
-                        onDragStart={(event) => {
-                          setPreStealDraggedEntryId(entry.id);
-                          event.dataTransfer.setData("text/plain", entry.id);
-                        }}
-                        onDragEnd={() => setPreStealDraggedEntryId(null)}
-                        onDragOver={(event) => {
-                          if (!preStealDraggedEntryId) return;
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = "move";
-                        }}
-                        onDrop={(event) => {
-                          event.preventDefault();
-                          handlePreStealEntryDrop(entry.id);
-                        }}
-                      >
-                        <span className="pre-steal-entry-text">
-                          {entry.triggerLetters}
-                          {" -> "}
-                          {entry.claimWord}
-                        </span>
-                        <button className="button-secondary" onClick={() => handleRemovePreStealEntry(entry.id)}>
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        </div>
+      {isInGame && gameState && roomState && (
+        <GameView
+          roomState={roomState}
+          gameState={gameState}
+          selfPlayerId={selfPlayerId}
+          isSpectator={isSpectator}
+          endTimerRemaining={endTimerRemaining}
+          formatTime={formatTime}
+          onFlip={handleFlip}
+          isFlipRevealActive={isFlipRevealActive}
+          isTileSelectionEnabled={isTileSelectionEnabled}
+          onClaimTileSelect={handleClaimTileSelect}
+          pendingFlip={pendingFlip}
+          flipRevealDurationMs={flipRevealDurationMs}
+          flipRevealElapsedMs={flipRevealElapsedMs}
+          flipRevealPlayerName={flipRevealPlayerName}
+          claimWindow={claimWindow}
+          claimProgress={claimProgress}
+          claimInputRef={claimInputRef}
+          claimWord={claimWord}
+          setClaimWord={setClaimWord}
+          isMyClaimWindow={isMyClaimWindow}
+          onClaimSubmit={handleClaimSubmit}
+          onClaimIntent={handleClaimIntent}
+          claimPlaceholder={claimPlaceholder}
+          isClaimInputDisabled={isClaimInputDisabled}
+          isClaimButtonDisabled={isClaimButtonDisabled}
+          claimButtonLabel={claimButtonLabel}
+          orderedGamePlayers={orderedGamePlayers}
+          claimedWordHighlights={claimedWordHighlights}
+          setShowLeaveGameConfirm={setShowLeaveGameConfirm}
+          spectatorPreStealPlayers={spectatorPreStealPlayers}
+          preStealTriggerInput={preStealTriggerInput}
+          setPreStealTriggerInput={setPreStealTriggerInput}
+          preStealClaimWordInput={preStealClaimWordInput}
+          setPreStealClaimWordInput={setPreStealClaimWordInput}
+          onAddPreStealEntry={handleAddPreStealEntry}
+          myPreStealEntries={myPreStealEntries}
+          setPreStealDraggedEntryId={setPreStealDraggedEntryId}
+          preStealDraggedEntryId={preStealDraggedEntryId}
+          onPreStealEntryDrop={handlePreStealEntryDrop}
+          onRemovePreStealEntry={handleRemovePreStealEntry}
+        />
       )}
 
       {roomState?.status === "ended" && gameState && (
-        <div className="panel">
-          {!isReplayMode && (
-            <>
-              <h2>Game Over</h2>
-              <p className="muted">Final scores</p>
-              <div className="player-list">
-                {gameOverStandings.players.map((player) => {
-                  const isWinner =
-                    gameOverStandings.winningScore !== null && player.score === gameOverStandings.winningScore;
-                  return (
-                    <div key={player.id} className={isWinner ? "player winner" : "player"}>
-                      <div>
-                        <span>{player.name}</span>
-                        {isWinner && <span className="badge winner-badge">winner</span>}
-                      </div>
-                      <span className="score">{player.score}</span>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="button-row">
-                <button className="button-secondary" onClick={handleLeaveRoom}>
-                  Return to lobby
-                </button>
-                <button onClick={handleEnterReplay} disabled={roomReplaySteps.length === 0}>
-                  Watch replay
-                </button>
-              </div>
-              {roomReplaySteps.length === 0 && <p className="muted">Replay unavailable for this game.</p>}
-            </>
-          )}
-          {replayPanelContent}
-        </div>
+        <EndedGameView
+          isReplayMode={isReplayMode}
+          gameOverStandings={gameOverStandings}
+          roomReplayStepsLength={roomReplaySteps.length}
+          onLeaveRoom={handleLeaveRoom}
+          onEnterReplay={handleEnterReplay}
+          replayPanelContent={replayPanelContent}
+        />
       )}
 
       {!roomState && replaySource?.kind === "imported" && replayPanelContent && (
@@ -3574,305 +2319,39 @@ export default function App() {
       )}
 
       {showPracticeStartPrompt && !practiceState.active && !roomState && (
-        <div className="join-overlay">
-          <div className="panel join-modal practice-start-modal">
-            <h2>Start Practice Mode</h2>
-            <p className="muted">Choose difficulty and optional puzzle timer settings.</p>
-            <div className="practice-start-difficulty-picker" role="group" aria-label="Practice difficulty">
-              <div className="practice-difficulty-segmented">
-                {[1, 2, 3, 4, 5].map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    className={
-                      practiceStartDifficulty === level
-                        ? "practice-difficulty-option active"
-                        : "practice-difficulty-option"
-                    }
-                    onClick={() => setPracticeStartDifficulty(level as PracticeDifficulty)}
-                    aria-pressed={practiceStartDifficulty === level}
-                  >
-                    {level}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <label className="practice-start-timer-toggle">
-              <input
-                type="checkbox"
-                checked={practiceStartTimerEnabled}
-                onChange={(event) => setPracticeStartTimerEnabled(event.target.checked)}
-              />
-              <span>Enable puzzle timer</span>
-            </label>
-            <label className="practice-start-timer-seconds">
-              <span>
-                Timer seconds ({MIN_PRACTICE_TIMER_SECONDS}-{MAX_PRACTICE_TIMER_SECONDS})
-              </span>
-              <div className="practice-start-timer-input-row">
-                <input
-                  type="range"
-                  min={MIN_PRACTICE_TIMER_SECONDS}
-                  max={MAX_PRACTICE_TIMER_SECONDS}
-                  step={1}
-                  value={practiceStartTimerSeconds}
-                  disabled={!practiceStartTimerEnabled}
-                  onChange={(event) => setPracticeStartTimerSeconds(clampPracticeTimerSeconds(Number(event.target.value)))}
-                />
-                <input
-                  type="number"
-                  min={MIN_PRACTICE_TIMER_SECONDS}
-                  max={MAX_PRACTICE_TIMER_SECONDS}
-                  value={practiceStartTimerSeconds}
-                  disabled={!practiceStartTimerEnabled}
-                  onChange={(event) => setPracticeStartTimerSeconds(clampPracticeTimerSeconds(Number(event.target.value)))}
-                  onBlur={() =>
-                    setPracticeStartTimerSeconds((current) => clampPracticeTimerSeconds(current))
-                  }
-                />
-              </div>
-            </label>
-            <div className="button-row">
-              <button className="button-secondary" onClick={handleCancelPracticeStart}>
-                Cancel
-              </button>
-              <button onClick={handleConfirmPracticeStart} disabled={practiceStartDifficulty === null}>
-                Start practice
-              </button>
-            </div>
-          </div>
-        </div>
+        <PracticeStartModal
+          practiceStartDifficulty={practiceStartDifficulty}
+          setPracticeStartDifficulty={setPracticeStartDifficulty}
+          practiceStartTimerEnabled={practiceStartTimerEnabled}
+          setPracticeStartTimerEnabled={setPracticeStartTimerEnabled}
+          practiceStartTimerSeconds={practiceStartTimerSeconds}
+          setPracticeStartTimerSeconds={setPracticeStartTimerSeconds}
+          minPracticeTimerSeconds={MIN_PRACTICE_TIMER_SECONDS}
+          maxPracticeTimerSeconds={MAX_PRACTICE_TIMER_SECONDS}
+          clampPracticeTimerSeconds={clampPracticeTimerSeconds}
+          onCancel={handleCancelPracticeStart}
+          onConfirm={handleConfirmPracticeStart}
+        />
       )}
 
       {isSettingsOpen && (
-        <div className="join-overlay">
-          <div className="panel join-modal settings-modal" role="dialog" aria-modal="true">
-            <h2>Settings</h2>
-            <label>
-              Display name
-              <input
-                value={editNameDraft}
-                onChange={(event) => setEditNameDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    handleSaveSettings();
-                  }
-                }}
-                placeholder="Player name"
-                autoFocus
-              />
-            </label>
-            <div className="settings-section">
-              <span>Input method</span>
-              <label className="settings-option">
-                <input
-                  type="checkbox"
-                  checked={userSettingsDraft.inputMethod === "tile"}
-                  onChange={(event) =>
-                    setUserSettingsDraft((current) => ({
-                      ...current,
-                      inputMethod: event.target.checked ? "tile" : "typing"
-                    }))
-                  }
-                />
-                <span>
-                  <strong>Enable click/tap letter tiles</strong>
-                </span>
-              </label>
-            </div>
-            <div className="settings-section">
-              <span>Appearance</span>
-              <label className="settings-option">
-                <input
-                  type="checkbox"
-                  checked={userSettingsDraft.theme === "dark"}
-                  onChange={(event) =>
-                    setUserSettingsDraft((current) => ({
-                      ...current,
-                      theme: event.target.checked ? "dark" : "light"
-                    }))
-                  }
-                />
-                <span>
-                  <strong>Dark mode</strong>
-                </span>
-              </label>
-            </div>
-            <div className="button-row">
-              <button className="button-secondary" onClick={handleCloseSettings}>
-                Cancel
-              </button>
-              <button onClick={handleSaveSettings} disabled={!editNameDraft.trim()}>
-                Save settings
-              </button>
-            </div>
-          </div>
-        </div>
+        <SettingsModal
+          editNameDraft={editNameDraft}
+          setEditNameDraft={setEditNameDraft}
+          userSettingsDraft={userSettingsDraft}
+          setUserSettingsDraft={setUserSettingsDraft}
+          onClose={handleCloseSettings}
+          onSave={handleSaveSettings}
+        />
       )}
 
       {showLeaveGameConfirm && (
-        <div className="join-overlay">
-          <div className="panel join-modal leave-confirm-modal">
-            <h2>Leave this game?</h2>
-            <p className="muted">
-              This removes you from the current game, and you will not be able to rejoin by reloading.
-            </p>
-            <div className="button-row">
-              <button className="button-secondary" onClick={() => setShowLeaveGameConfirm(false)}>
-                Stay in game
-              </button>
-              <button className="button-danger" onClick={handleConfirmLeaveGame}>
-                Leave game
-              </button>
-            </div>
-          </div>
-        </div>
+        <LeaveGameModal
+          onStay={() => setShowLeaveGameConfirm(false)}
+          onLeave={handleConfirmLeaveGame}
+        />
       )}
       </div>
     </UserSettingsContext.Provider>
   );
-}
-
-function WordList({
-  player,
-  isSelf,
-  highlightedWordIds,
-  onTileLetterSelect
-}: {
-  player: Player;
-  isSelf: boolean;
-  highlightedWordIds: Record<string, WordHighlightKind>;
-  onTileLetterSelect: (letter: string) => void;
-}) {
-  const { isTileInputMethodEnabled } = useUserSettings();
-
-  return (
-    <div className={isSelf ? "word-list word-list-self" : "word-list"}>
-      <div className="word-header">
-        <span>{player.name}'s words</span>
-        <span className="muted">{player.words.length}</span>
-      </div>
-      {player.words.length === 0 && <div className="muted">No words yet.</div>}
-      {player.words.length > 0 && (
-        <div className="word-list-words">
-          {player.words.map((word) => (
-            <div key={word.id} className={getWordItemClassName(highlightedWordIds[word.id])}>
-              <div className="word-tiles" aria-label={word.text}>
-                {word.text.split("").map((letter, index) => (
-                  <div
-                    key={`${word.id}-${index}`}
-                    className={isTileInputMethodEnabled ? "tile word-tile tile-selectable" : "tile word-tile"}
-                    role={isTileInputMethodEnabled ? "button" : undefined}
-                    tabIndex={isTileInputMethodEnabled ? 0 : undefined}
-                    onClick={
-                      isTileInputMethodEnabled ? () => onTileLetterSelect(letter.toUpperCase()) : undefined
-                    }
-                    onKeyDown={
-                      isTileInputMethodEnabled
-                        ? (event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              onTileLetterSelect(letter.toUpperCase());
-                            }
-                          }
-                        : undefined
-                    }
-                    aria-label={
-                      isTileInputMethodEnabled
-                        ? `Use letter ${letter.toUpperCase()} from ${player.name}'s word`
-                        : undefined
-                    }
-                  >
-                    {letter.toUpperCase()}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ReplayWordList({ player }: { player: ReplayPlayerSnapshot }) {
-  return (
-    <div className="word-list">
-      <div className="word-header">
-        <span>{player.name}'s words</span>
-        <span className="muted">{player.words.length}</span>
-      </div>
-      {player.words.length === 0 && <div className="muted">No words yet.</div>}
-      {player.words.map((word) => (
-        <div key={word.id} className="word-item">
-          <div className="word-tiles" aria-label={word.text}>
-            {word.text.split("").map((letter, index) => (
-              <div key={`${word.id}-${index}`} className="tile word-tile">
-                {letter.toUpperCase()}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function getWordItemClassName(highlightKind: WordHighlightKind | undefined) {
-  if (highlightKind === "steal") {
-    return "word-item word-item-steal";
-  }
-  if (highlightKind === "claim") {
-    return "word-item word-item-claim";
-  }
-  return "word-item";
-}
-
-function getPracticeOptionClassName(
-  option: PracticeScoredWord,
-  submittedWordNormalized: string
-) {
-  if (option.word === submittedWordNormalized) {
-    return "practice-option submitted";
-  }
-  return "practice-option";
-}
-
-function getReplayPracticeOptionClassName(
-  option: PracticeScoredWord,
-  activeReplayClaimedWords: Set<string>
-): string {
-  if (activeReplayClaimedWords.has(normalizeEditorText(option.word))) {
-    return "practice-option replay-claimed";
-  }
-  return "practice-option";
-}
-
-function formatPracticeOptionLabel(option: PracticeScoredWord): string {
-  if (option.source !== "steal" || !option.stolenFrom) {
-    return option.word;
-  }
-
-  const addedLetters = getAddedLettersForSteal(option.word, option.stolenFrom);
-  return `${option.word} (${option.stolenFrom} + ${addedLetters})`;
-}
-
-function getAddedLettersForSteal(word: string, stolenWord: string): string {
-  const remainingCounts: Record<string, number> = {};
-  for (const letter of stolenWord) {
-    remainingCounts[letter] = (remainingCounts[letter] ?? 0) + 1;
-  }
-
-  let addedLetters = "";
-  for (const letter of word) {
-    if ((remainingCounts[letter] ?? 0) > 0) {
-      remainingCounts[letter] -= 1;
-      continue;
-    }
-    addedLetters += letter;
-  }
-
-  return addedLetters;
 }
