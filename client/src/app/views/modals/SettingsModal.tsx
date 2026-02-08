@@ -76,6 +76,25 @@ export function SettingsModal({
             </span>
           </label>
         </div>
+        <div className="settings-section">
+          <span>Chat</span>
+          <label className="settings-option">
+            <input
+              type="checkbox"
+              checked={userSettingsDraft.chatEnabled}
+              onChange={(event) =>
+                setUserSettingsDraft((current) => ({
+                  ...current,
+                  chatEnabled: event.target.checked,
+                  bottomPanelMode: event.target.checked ? current.bottomPanelMode : "log"
+                }))
+              }
+            />
+            <span>
+              <strong>Enable in-game chat</strong>
+            </span>
+          </label>
+        </div>
         <div className="button-row">
           <button className="button-secondary" onClick={onClose}>
             Cancel

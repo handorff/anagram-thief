@@ -334,6 +334,10 @@ export default function App() {
     const onGameState = (state: GameState) => setGameState(state);
     const onPracticeState = (state: PracticeModeState) => setPracticeState(state);
     const onChatHistory = (messages: ChatMessage[]) => {
+      if (!userSettings.chatEnabled) {
+        setChatMessages([]);
+        return;
+      }
       if (!Array.isArray(messages)) {
         setChatMessages([]);
         return;
@@ -345,6 +349,7 @@ export default function App() {
       setChatMessages(messages.slice(messages.length - MAX_CHAT_ENTRIES));
     };
     const onChatMessage = (message: ChatMessage) => {
+      if (!userSettings.chatEnabled) return;
       if (!message || typeof message !== "object") return;
       setChatMessages((current) => {
         const next = [...current, message];
@@ -433,7 +438,7 @@ export default function App() {
       socket.off("session:self", onSessionSelf);
       socket.off("error", onError);
     };
-  }, [appendGameLogEntries, playerName]);
+  }, [appendGameLogEntries, playerName, userSettings.chatEnabled]);
 
   const currentPlayers: Player[] = useMemo(() => {
     if (gameState) return gameState.players;
@@ -574,7 +579,8 @@ export default function App() {
   const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isTileSelectionEnabled = isTileInputMethodEnabled && !isSpectator;
   const shouldShowGameLog = Boolean(gameState) && roomState?.status === "in-game";
-  const isBottomPanelChatMode = userSettings.bottomPanelMode === "chat";
+  const isBottomPanelChatEnabled = userSettings.chatEnabled;
+  const isBottomPanelChatMode = isBottomPanelChatEnabled && userSettings.bottomPanelMode === "chat";
   const roomReplay = gameState?.replay ?? null;
   const roomReplaySteps = useMemo(
     () =>
@@ -1412,12 +1418,19 @@ export default function App() {
     if (roomId) {
       socket.emit("player:update-name", { name: resolvedName });
     }
-    setUserSettings(userSettingsDraft);
-    persistUserSettings(userSettingsDraft);
+    const normalizedSettings = userSettingsDraft.chatEnabled
+      ? userSettingsDraft
+      : { ...userSettingsDraft, bottomPanelMode: "log" as const };
+    setUserSettings(normalizedSettings);
+    persistUserSettings(normalizedSettings);
+    setUserSettingsDraft(normalizedSettings);
     setIsSettingsOpen(false);
   }, [editNameDraft, roomId, userSettingsDraft]);
 
   const handleBottomPanelModeChange = useCallback((mode: "log" | "chat") => {
+    if (mode === "chat" && !userSettings.chatEnabled) {
+      return;
+    }
     setUserSettings((current) => {
       if (current.bottomPanelMode === mode) {
         return current;
@@ -1427,16 +1440,17 @@ export default function App() {
       return next;
     });
     setUserSettingsDraft((current) => ({ ...current, bottomPanelMode: mode }));
-  }, []);
+  }, [userSettings.chatEnabled]);
 
   const handleChatSubmit = useCallback(() => {
     if (!roomId) return;
     if (isSpectator) return;
+    if (!userSettings.chatEnabled) return;
     const text = chatDraft.trim();
     if (!text) return;
     socket.emit("chat:send", { roomId, text });
     setChatDraft("");
-  }, [roomId, isSpectator, chatDraft]);
+  }, [roomId, isSpectator, chatDraft, userSettings.chatEnabled]);
 
   const handleFlip = useCallback(() => {
     if (!roomId) return;
@@ -1604,6 +1618,21 @@ export default function App() {
     setPracticeSubmitError(null);
     requestAnimationFrame(() => practiceInputRef.current?.focus());
   }, [practiceState.active, practiceState.phase, practiceState.puzzle?.id]);
+
+  useEffect(() => {
+    if (userSettings.chatEnabled) return;
+    setChatMessages([]);
+    setChatDraft("");
+    if (userSettings.bottomPanelMode !== "log") {
+      setUserSettings((current) => {
+        if (current.bottomPanelMode === "log") return current;
+        const next = { ...current, bottomPanelMode: "log" as const };
+        persistUserSettings(next);
+        return next;
+      });
+      setUserSettingsDraft((current) => ({ ...current, bottomPanelMode: "log" }));
+    }
+  }, [userSettings.chatEnabled, userSettings.bottomPanelMode]);
 
   useEffect(() => {
     setShowAllPracticeOptions(false);
@@ -2375,13 +2404,15 @@ export default function App() {
             >
               Game Log
             </button>
-            <button
-              type="button"
-              className={`game-log-mode-button ${isBottomPanelChatMode ? "active" : ""}`}
-              onClick={() => handleBottomPanelModeChange("chat")}
-            >
-              Chat
-            </button>
+            {isBottomPanelChatEnabled && (
+              <button
+                type="button"
+                className={`game-log-mode-button ${isBottomPanelChatMode ? "active" : ""}`}
+                onClick={() => handleBottomPanelModeChange("chat")}
+              >
+                Chat
+              </button>
+            )}
           </div>
           {!isBottomPanelChatMode && (
             <div ref={gameLogListRef} className="game-log-list">

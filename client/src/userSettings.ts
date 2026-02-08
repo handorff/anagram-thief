@@ -10,12 +10,14 @@ export type UserSettings = {
   inputMethod: InputMethodSetting;
   theme: ThemeSetting;
   bottomPanelMode: BottomPanelModeSetting;
+  chatEnabled: boolean;
 };
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   inputMethod: "typing",
   theme: "light",
-  bottomPanelMode: "log"
+  bottomPanelMode: "log",
+  chatEnabled: true
 };
 
 function normalizeInputMethodSetting(value: unknown): InputMethodSetting {
@@ -30,16 +32,23 @@ function normalizeBottomPanelModeSetting(value: unknown): BottomPanelModeSetting
   return value === "chat" ? "chat" : "log";
 }
 
+function normalizeChatEnabledSetting(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  return true;
+}
+
 function normalizeUserSettings(value: unknown): UserSettings {
   if (!value || typeof value !== "object") {
     return DEFAULT_USER_SETTINGS;
   }
 
   const candidate = value as Partial<UserSettings>;
+  const chatEnabled = normalizeChatEnabledSetting(candidate.chatEnabled);
   return {
     inputMethod: normalizeInputMethodSetting(candidate.inputMethod),
     theme: normalizeThemeSetting(candidate.theme),
-    bottomPanelMode: normalizeBottomPanelModeSetting(candidate.bottomPanelMode)
+    bottomPanelMode: chatEnabled ? normalizeBottomPanelModeSetting(candidate.bottomPanelMode) : "log",
+    chatEnabled
   };
 }
 
