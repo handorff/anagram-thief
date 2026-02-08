@@ -1872,7 +1872,11 @@ export default function App() {
       const target = event.target as HTMLElement | null;
       const isEditableTarget =
         target &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (isEditableTarget) return;
       const isSpace = event.code === "Space" || event.key === " " || event.key === "Spacebar";
       if (isSpace) {
         if (isFlipRevealActive) return;
