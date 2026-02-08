@@ -23,4 +23,5 @@ When Redis persistence is enabled:
 - Multiplayer state snapshots are saved automatically after game/session mutations.
 - State is hydrated on server boot before accepting connections.
 - Timers (flip reveal, claim window, cooldown, game end) resume from stored absolute timestamps.
-- Ended games are not retained indefinitely; cleanup behavior is unchanged.
+- Rooms with zero connected players are cleaned up after 15 minutes of inactivity.
+- Ended games are not retained indefinitely.

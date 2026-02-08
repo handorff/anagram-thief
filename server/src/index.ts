@@ -60,6 +60,7 @@ const MIN_PRACTICE_TIMER_SECONDS = 10;
 const MAX_PRACTICE_TIMER_SECONDS = 120;
 const FLIP_REVEAL_MS = 1_000;
 const CLAIM_COOLDOWN_MS = 10_000;
+const ROOM_INACTIVITY_CLEANUP_MS = 15 * 60 * 1000;
 const MAX_PLAYERS = 8;
 
 function resolveWordListPath(): string {
@@ -218,6 +219,8 @@ const sessionsById = new Map<string, SessionRecord>();
 const sessionsByPlayerId = new Map<string, SessionRecord>();
 const socketToSessionId = new Map<string, string>();
 const practiceBySessionId = new Map<string, PracticeModeStateInternal>();
+const roomInactivityCleanupTimeouts = new Map<string, NodeJS.Timeout>();
+const roomInactivitySince = new Map<string, number>();
 
 const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL?.trim() ?? "";
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ?? "";
@@ -407,6 +410,74 @@ function removeSpectatorFromRoom(room: RoomState, spectatorId: string): boolean 
   if (index === -1) return false;
   room.spectators.splice(index, 1);
   return true;
+}
+
+function getConnectedPlayerCount(room: RoomState): number {
+  return room.players.filter((player) => player.connected).length;
+}
+
+function clearRoomInactivityCleanup(roomId: string) {
+  const timeout = roomInactivityCleanupTimeouts.get(roomId);
+  if (timeout) {
+    clearTimeout(timeout);
+    roomInactivityCleanupTimeouts.delete(roomId);
+  }
+  roomInactivitySince.delete(roomId);
+}
+
+function syncRoomInactivityCleanup(roomId: string) {
+  const room = rooms.get(roomId);
+  if (!room) {
+    clearRoomInactivityCleanup(roomId);
+    return;
+  }
+
+  if (getConnectedPlayerCount(room) > 0) {
+    clearRoomInactivityCleanup(roomId);
+    return;
+  }
+
+  const now = Date.now();
+  const inactivitySince = roomInactivitySince.get(roomId) ?? now;
+  roomInactivitySince.set(roomId, inactivitySince);
+
+  const cleanupAt = inactivitySince + ROOM_INACTIVITY_CLEANUP_MS;
+  const delayMs = Math.max(0, cleanupAt - now);
+
+  const existingTimeout = roomInactivityCleanupTimeouts.get(roomId);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  const timeout = setTimeout(() => {
+    enqueue(roomId, () => {
+      const currentRoom = rooms.get(roomId);
+      if (!currentRoom) {
+        clearRoomInactivityCleanup(roomId);
+        return;
+      }
+
+      if (getConnectedPlayerCount(currentRoom) > 0) {
+        clearRoomInactivityCleanup(roomId);
+        return;
+      }
+
+      const trackedSince = roomInactivitySince.get(roomId);
+      if (typeof trackedSince !== "number") {
+        syncRoomInactivityCleanup(roomId);
+        return;
+      }
+
+      if (Date.now() < trackedSince + ROOM_INACTIVITY_CLEANUP_MS) {
+        syncRoomInactivityCleanup(roomId);
+        return;
+      }
+
+      cleanupRoom(roomId);
+    });
+  }, delayMs);
+
+  roomInactivityCleanupTimeouts.set(roomId, timeout);
 }
 
 function setSessionRoom(session: SessionRecord, roomId: string | null) {
@@ -1485,6 +1556,8 @@ function selectNextHost(room: RoomState) {
 }
 
 function cleanupRoom(roomId: string) {
+  clearRoomInactivityCleanup(roomId);
+
   const room = rooms.get(roomId);
   if (room) {
     [...room.players, ...room.spectators].forEach((participant) => {
@@ -1567,6 +1640,7 @@ function handlePlayerLeave(roomId: string, playerId: string) {
 
   if (isSpectator) {
     removeSpectatorFromRoom(room, playerId);
+    syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
     broadcastRoomList();
     return;
@@ -1595,6 +1669,7 @@ function handlePlayerLeave(roomId: string, playerId: string) {
     return;
   }
 
+  syncRoomInactivityCleanup(roomId);
   emitRoomState(roomId);
   broadcastRoomList();
 }
@@ -1629,6 +1704,7 @@ function handlePlayerDisconnect(roomId: string, playerId: string) {
     const spectator = findSpectator(room, playerId);
     if (!spectator) return;
     spectator.connected = false;
+    syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
     broadcastRoomList();
     return;
@@ -1647,14 +1723,7 @@ function handlePlayerDisconnect(roomId: string, playerId: string) {
     emitGameState(roomId);
   }
 
-  if (room.status !== "in-game") {
-    const connectedCount = room.players.filter((player) => player.connected).length;
-    if (connectedCount === 0) {
-      cleanupRoom(roomId);
-      return;
-    }
-  }
-
+  syncRoomInactivityCleanup(roomId);
   emitRoomState(roomId);
   broadcastRoomList();
 }
@@ -1833,6 +1902,10 @@ async function hydrateStateFromRedis() {
       restoreGameTimers(game);
     }
 
+    for (const room of rooms.values()) {
+      syncRoomInactivityCleanup(room.id);
+    }
+
     console.log(
       `[persistence] Hydrated ${rooms.size} rooms, ${games.size} games, ${sessionsById.size} sessions`
     );
@@ -1886,6 +1959,7 @@ io.on("connection", (socket) => {
           }
           emitGameState(restoreRoomId);
         }
+        syncRoomInactivityCleanup(restoreRoomId);
         emitRoomState(restoreRoomId);
         broadcastRoomList();
       } else if (spectator) {
@@ -1898,6 +1972,7 @@ io.on("connection", (socket) => {
         if (game) {
           emitGameState(restoreRoomId);
         }
+        syncRoomInactivityCleanup(restoreRoomId);
         emitRoomState(restoreRoomId);
         broadcastRoomList();
       } else {
@@ -2252,6 +2327,7 @@ io.on("connection", (socket) => {
       emitGameState(roomId);
     }
 
+    syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
     broadcastRoomList();
   });
@@ -2347,6 +2423,7 @@ io.on("connection", (socket) => {
       socket.join(roomId);
       emitSessionSelf(socket, currentSession);
 
+      syncRoomInactivityCleanup(roomId);
       emitRoomState(roomId);
       broadcastRoomList();
     }
@@ -2410,6 +2487,7 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     emitSessionSelf(socket, currentSession);
 
+    syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
     broadcastRoomList();
   });
@@ -2462,6 +2540,7 @@ io.on("connection", (socket) => {
     addSpectatorToRoom(room, currentSession.playerId, sanitizedName);
     emitSessionSelf(socket, currentSession);
 
+    syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
     emitGameState(roomId);
     broadcastRoomList();
@@ -2507,6 +2586,7 @@ io.on("connection", (socket) => {
       emitGameState(roomId);
     }
 
+    syncRoomInactivityCleanup(roomId);
     emitRoomState(roomId);
   });
 
