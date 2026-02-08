@@ -1131,8 +1131,28 @@ button:disabled {
 
 .pre-steal-entry-form {
   display: grid;
-  grid-template-columns: 0.8fr 1.2fr auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr) auto;
   gap: 0.5rem;
+  align-items: center;
+}
+
+.pre-steal-entry-form > * {
+  min-width: 0;
+}
+
+.pre-steal-entry-form input {
+  width: 100%;
+}
+
+.pre-steal-trigger-input {
+  justify-self: stretch;
+}
+
+.pre-steal-claim-input {
+  justify-self: stretch;
 }
 
 .pre-steal-entry {

@@ -288,11 +288,13 @@ export function GameView({
                 </div>
                 <div className="pre-steal-entry-form">
                   <input
+                    className="pre-steal-trigger-input"
                     value={preStealTriggerInput}
                     onChange={(event) => setPreStealTriggerInput(event.target.value)}
                     placeholder="Trigger letters"
                   />
                   <input
+                    className="pre-steal-claim-input"
                     value={preStealClaimWordInput}
                     onChange={(event) => setPreStealClaimWordInput(event.target.value)}
                     placeholder="Claim word"
