@@ -221,7 +221,7 @@ export function GameView({
         </div>
 
         <div className="words board-words">
-          {orderedGamePlayers.map((player) => (
+          {gameState.players.map((player) => (
             <WordList
               key={player.id}
               player={player}

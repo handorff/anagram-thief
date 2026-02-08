@@ -190,7 +190,7 @@ export function ReplayPanelView({
             ))}
           </div>
           <div className="words board-words">
-            {orderedReplayPlayers.map((player) => (
+            {activeReplayState.players.map((player) => (
               <ReplayWordList key={player.id} player={player} />
             ))}
           </div>
