@@ -52,6 +52,9 @@ type Props = {
   isClaimInputDisabled: boolean;
   isClaimButtonDisabled: boolean;
   claimButtonLabel: string;
+  shouldShowClaimUndoButton: boolean;
+  isClaimUndoButtonDisabled: boolean;
+  onClaimUndoTap: () => void;
   orderedGamePlayers: Player[];
   claimedWordHighlights: Record<string, WordHighlightKind>;
   setShowLeaveGameConfirm: Dispatch<SetStateAction<boolean>>;
@@ -95,6 +98,9 @@ export function GameView({
   isClaimInputDisabled,
   isClaimButtonDisabled,
   claimButtonLabel,
+  shouldShowClaimUndoButton,
+  isClaimUndoButtonDisabled,
+  onClaimUndoTap,
   orderedGamePlayers,
   claimedWordHighlights,
   setShowLeaveGameConfirm,
@@ -244,7 +250,18 @@ export function GameView({
               placeholder={claimPlaceholder}
               disabled={isClaimInputDisabled}
             />
+            {shouldShowClaimUndoButton && (
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={onClaimUndoTap}
+                disabled={isClaimUndoButtonDisabled}
+              >
+                Undo
+              </button>
+            )}
             <button
+              type="button"
               onClick={isMyClaimWindow ? onClaimSubmit : onClaimIntent}
               disabled={isClaimButtonDisabled}
             >

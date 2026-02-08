@@ -578,6 +578,10 @@ export default function App() {
     : Boolean(claimWindow) || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isClaimInputDisabled = !isMyClaimWindow || isClaimCooldownActive || isFlipRevealActive || isSpectator;
   const isTileSelectionEnabled = isTileInputMethodEnabled && !isSpectator;
+  const shouldShowClaimUndoButton = isTileInputMethodEnabled && !isSpectator;
+  const isClaimUndoButtonDisabled = isMyClaimWindow
+    ? claimWord.length === 0
+    : queuedTileClaimLetters.length === 0;
   const shouldShowGameLog = Boolean(gameState) && roomState?.status === "in-game";
   const isBottomPanelChatEnabled = userSettings.chatEnabled;
   const isBottomPanelChatMode = isBottomPanelChatEnabled && userSettings.bottomPanelMode === "chat";
@@ -1498,6 +1502,19 @@ export default function App() {
     ]
   );
 
+  const handleClaimUndoTap = useCallback(() => {
+    if (isSpectator) return;
+    if (!isTileInputMethodEnabled) return;
+
+    if (isMyClaimWindow) {
+      setClaimWord((current) => current.slice(0, -1));
+      requestAnimationFrame(() => claimInputRef.current?.focus());
+      return;
+    }
+
+    setQueuedTileClaimLetters((current) => current.slice(0, -1));
+  }, [isSpectator, isTileInputMethodEnabled, isMyClaimWindow]);
+
   const handleClaimSubmit = useCallback(() => {
     if (!roomState) return;
     if (isSpectator) return;
@@ -2364,6 +2381,9 @@ export default function App() {
           isClaimInputDisabled={isClaimInputDisabled}
           isClaimButtonDisabled={isClaimButtonDisabled}
           claimButtonLabel={claimButtonLabel}
+          shouldShowClaimUndoButton={shouldShowClaimUndoButton}
+          isClaimUndoButtonDisabled={isClaimUndoButtonDisabled}
+          onClaimUndoTap={handleClaimUndoTap}
           orderedGamePlayers={orderedGamePlayers}
           claimedWordHighlights={claimedWordHighlights}
           setShowLeaveGameConfirm={setShowLeaveGameConfirm}
