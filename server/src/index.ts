@@ -62,6 +62,12 @@ const FLIP_REVEAL_MS = 1_000;
 const CLAIM_COOLDOWN_MS = 10_000;
 const ROOM_INACTIVITY_CLEANUP_MS = 15 * 60 * 1000;
 const MAX_PLAYERS = 8;
+const PRIVATE_ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const PRIVATE_ROOM_CODE_LENGTH = 8;
+const PRIVATE_JOIN_RATE_WINDOW_MS = 60_000;
+const PRIVATE_JOIN_RATE_MAX_ATTEMPTS = 12;
+const PRIVATE_JOIN_FAILURE_MESSAGE = "Private room unavailable or invite is invalid.";
+const PRIVATE_JOIN_RATE_LIMIT_MESSAGE = "Too many private join attempts. Please try again in one minute.";
 
 function resolveWordListPath(): string {
   const envPath = process.env.WORD_LIST_PATH ? path.resolve(process.env.WORD_LIST_PATH) : null;
@@ -225,6 +231,7 @@ const socketToSessionId = new Map<string, string>();
 const practiceBySessionId = new Map<string, PracticeModeStateInternal>();
 const roomInactivityCleanupTimeouts = new Map<string, NodeJS.Timeout>();
 const roomInactivitySince = new Map<string, number>();
+const privateJoinAttemptsByIdentity = new Map<string, number[]>();
 
 const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL?.trim() ?? "";
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ?? "";
@@ -291,6 +298,56 @@ function sanitizeName(name: string): string {
 function sanitizeRoomName(name: string): string {
   const trimmed = name.trim();
   return trimmed.length > 0 ? trimmed.slice(0, 36) : "New Room";
+}
+
+function generatePrivateRoomCode(): string {
+  const bytes = randomBytes(PRIVATE_ROOM_CODE_LENGTH);
+  let code = "";
+  for (const byte of bytes) {
+    code += PRIVATE_ROOM_CODE_ALPHABET[byte % PRIVATE_ROOM_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
+function normalizePrivateRoomCode(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim().toUpperCase();
+  if (!trimmed) return "";
+  if (trimmed.length > 32) return "";
+  if (!/^[A-Z0-9]+$/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function getPrivateJoinIdentity(socket: Socket, session: SessionRecord): string {
+  const forwardedFor = socket.handshake.headers["x-forwarded-for"];
+  if (typeof forwardedFor === "string") {
+    const forwardedAddress = forwardedFor.split(",")[0]?.trim();
+    if (forwardedAddress) return `ip:${forwardedAddress}`;
+  } else if (Array.isArray(forwardedFor)) {
+    const forwardedAddress = forwardedFor[0]?.split(",")[0]?.trim();
+    if (forwardedAddress) return `ip:${forwardedAddress}`;
+  }
+
+  const socketAddress = socket.handshake.address?.trim();
+  if (socketAddress) return `ip:${socketAddress}`;
+
+  return `session:${session.sessionId}`;
+}
+
+function isPrivateJoinRateLimited(identity: string, now: number = Date.now()): boolean {
+  const windowStart = now - PRIVATE_JOIN_RATE_WINDOW_MS;
+  const recentAttempts = (privateJoinAttemptsByIdentity.get(identity) ?? []).filter(
+    (attemptAt) => attemptAt > windowStart
+  );
+
+  if (recentAttempts.length >= PRIVATE_JOIN_RATE_MAX_ATTEMPTS) {
+    privateJoinAttemptsByIdentity.set(identity, recentAttempts);
+    return true;
+  }
+
+  recentAttempts.push(now);
+  privateJoinAttemptsByIdentity.set(identity, recentAttempts);
+  return false;
 }
 
 function clampFlipTimerSeconds(value: unknown): number {
@@ -2458,7 +2515,7 @@ io.on("connection", (socket) => {
       const resolvedClaimTimerSeconds = clampClaimTimerSeconds(claimTimerSeconds);
       const resolvedPreStealEnabled = Boolean(preStealEnabled);
       const roomId = randomUUID();
-      const code = isPublic ? undefined : Math.random().toString(36).slice(2, 6).toUpperCase();
+      const code = isPublic ? undefined : generatePrivateRoomCode();
       const sanitizedPlayerName = sanitizeName(resolvedPlayerName);
       const player: Player = {
         id: currentSession.playerId,
@@ -2525,17 +2582,38 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const hasProvidedCode = typeof code === "string" && code.trim().length > 0;
+    const normalizedCode = normalizePrivateRoomCode(code);
     const room = rooms.get(roomId);
+    const isPrivateJoinAttempt = hasProvidedCode || (room !== undefined && !room.isPublic);
+    if (isPrivateJoinAttempt) {
+      const joinIdentity = getPrivateJoinIdentity(socket, currentSession);
+      if (isPrivateJoinRateLimited(joinIdentity)) {
+        emitError(socket, PRIVATE_JOIN_RATE_LIMIT_MESSAGE, "private_join_rate_limited");
+        return;
+      }
+    }
+
     if (!room) {
+      if (isPrivateJoinAttempt) {
+        emitError(socket, PRIVATE_JOIN_FAILURE_MESSAGE, "private_join_failed");
+        return;
+      }
       emitError(socket, "Room not found.");
       return;
     }
+
     if (room.status !== "lobby") {
+      if (!room.isPublic) {
+        emitError(socket, PRIVATE_JOIN_FAILURE_MESSAGE, "private_join_failed");
+        return;
+      }
       emitError(socket, "Game already started.");
       return;
     }
-    if (!room.isPublic && room.code && room.code !== code) {
-      emitError(socket, "Invalid room code.");
+
+    if (!room.isPublic && (!room.code || room.code !== normalizedCode)) {
+      emitError(socket, PRIVATE_JOIN_FAILURE_MESSAGE, "private_join_failed");
       return;
     }
 
@@ -2547,6 +2625,10 @@ io.on("connection", (socket) => {
     } else {
       const maxPlayers = (room as RoomState & { maxPlayers?: number }).maxPlayers ?? MAX_PLAYERS;
       if (room.players.length >= maxPlayers) {
+        if (!room.isPublic) {
+          emitError(socket, PRIVATE_JOIN_FAILURE_MESSAGE, "private_join_failed");
+          return;
+        }
         emitError(socket, "Room is full.");
         return;
       }
