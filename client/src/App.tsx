@@ -6,7 +6,6 @@ import type {
   PracticeModeState,
   PracticeScoredWord,
   PracticeValidateCustomResponse,
-  ReplayAnalysisMap,
   ReplayAnalysisResponse,
   ReplayAnalysisResult,
   ReplayPlayerSnapshot,
@@ -30,8 +29,7 @@ import {
 import {
   MAX_REPLAY_IMPORT_FILE_BYTES,
   buildReplayExportFilename,
-  getImportedReplayAnalysis,
-  toReplayAnalysisMap
+  getImportedReplayAnalysis
 } from "./replayImportExport";
 import {
   buildUserSettingsContextValue,
@@ -1163,10 +1161,8 @@ export default function App() {
   const handleExportReplay = useCallback(() => {
     if (!roomReplay || roomState?.status !== "ended") return;
 
-    const analysisByStepIndex: ReplayAnalysisMap | undefined = toReplayAnalysisMap(replayAnalysisByStepIndex);
     const replayFile = buildReplayFileV1({
       replay: roomReplay,
-      analysisByStepIndex,
       sourceRoomId: roomState.id,
       app: "anagram-thief-web"
     });
@@ -1180,7 +1176,7 @@ export default function App() {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(downloadUrl);
-  }, [roomReplay, roomState?.id, roomState?.status, replayAnalysisByStepIndex]);
+  }, [roomReplay, roomState?.id, roomState?.status]);
 
   const handleViewReplayAsPuzzle = useCallback(async () => {
     if (!activeReplayState) return;
