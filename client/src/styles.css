@@ -420,6 +420,18 @@ h1, h2, h3 {
   margin: 0;
 }
 
+/* ─── Form section labels ──────────────────────────────────── */
+.form-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border-light);
+  padding-bottom: 0.3rem;
+  margin: 0;
+}
+
 /* ─── Forms ─────────────────────────────────────────────────── */
 :where(#root) label {
   display: flex;

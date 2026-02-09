@@ -49,10 +49,18 @@ export function LobbyCreateView({
   onBackToGames,
   onCreate
 }: Props) {
+  const minFlipTimerSliderSeconds = Math.max(5, minFlipTimerSeconds);
+  const maxFlipTimerSliderSeconds = Math.min(60, maxFlipTimerSeconds);
+  const visibleFlipTimerSeconds = Math.min(
+    maxFlipTimerSliderSeconds,
+    Math.max(minFlipTimerSliderSeconds, createFlipTimerSeconds)
+  );
+
   return (
     <div className="grid">
       <section className="panel panel-narrow">
         <h2>New Game</h2>
+        <h3 className="form-section-label">Room</h3>
         <label>
           Room name
           <input
@@ -70,50 +78,17 @@ export function LobbyCreateView({
           />
         </label>
         <label>
-          Max players (2-8)
+          Max players ({createMaxPlayers})
           <input
-            type="number"
+            type="range"
             min={2}
             max={8}
+            step={1}
             value={createMaxPlayers}
             onChange={(e) => setCreateMaxPlayers(Number(e.target.value))}
           />
         </label>
-        <label className="row">
-          <span>Flip timer</span>
-          <input
-            type="checkbox"
-            checked={createFlipTimerEnabled}
-            onChange={(e) => setCreateFlipTimerEnabled(e.target.checked)}
-          />
-        </label>
-        <label>
-          Flip timer seconds (1-60)
-          <input
-            type="number"
-            min={minFlipTimerSeconds}
-            max={maxFlipTimerSeconds}
-            value={createFlipTimerSeconds}
-            onChange={(e) => setCreateFlipTimerSeconds(Number(e.target.value))}
-            onBlur={() =>
-              setCreateFlipTimerSeconds((current) => clampFlipTimerSeconds(current))
-            }
-            disabled={!createFlipTimerEnabled}
-          />
-        </label>
-        <label>
-          Claim timer seconds (1-10)
-          <input
-            type="number"
-            min={minClaimTimerSeconds}
-            max={maxClaimTimerSeconds}
-            value={createClaimTimerSeconds}
-            onChange={(e) => setCreateClaimTimerSeconds(Number(e.target.value))}
-            onBlur={() =>
-              setCreateClaimTimerSeconds((current) => clampClaimTimerSeconds(current))
-            }
-          />
-        </label>
+        <h3 className="form-section-label">Gameplay</h3>
         <label className="row">
           <span>Enable pre-steal</span>
           <input
@@ -122,6 +97,38 @@ export function LobbyCreateView({
             onChange={(event) => setCreatePreStealEnabled(event.target.checked)}
           />
         </label>
+        <label>
+          Claim timer ({createClaimTimerSeconds}s)
+          <input
+            type="range"
+            min={minClaimTimerSeconds}
+            max={maxClaimTimerSeconds}
+            step={1}
+            value={createClaimTimerSeconds}
+            onChange={(e) => setCreateClaimTimerSeconds(clampClaimTimerSeconds(Number(e.target.value)))}
+          />
+        </label>
+        <label className="row">
+          <span>Enable flip timer</span>
+          <input
+            type="checkbox"
+            checked={createFlipTimerEnabled}
+            onChange={(e) => setCreateFlipTimerEnabled(e.target.checked)}
+          />
+        </label>
+        {createFlipTimerEnabled && (
+          <label>
+            Flip timer ({visibleFlipTimerSeconds}s)
+            <input
+              type="range"
+              min={minFlipTimerSliderSeconds}
+              max={maxFlipTimerSliderSeconds}
+              step={5}
+              value={visibleFlipTimerSeconds}
+              onChange={(e) => setCreateFlipTimerSeconds(clampFlipTimerSeconds(Number(e.target.value)))}
+            />
+          </label>
+        )}
         <div className="button-row">
           <button className="button-secondary" onClick={onBackToGames}>
             Back to games
