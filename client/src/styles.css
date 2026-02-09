@@ -421,7 +421,7 @@ h1, h2, h3 {
 }
 
 /* ─── Forms ─────────────────────────────────────────────────── */
-label {
+:where(#root) label {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -434,7 +434,7 @@ label.row {
   justify-content: space-between;
 }
 
-input {
+:where(#root) input {
   padding: 0.6rem 0.8rem;
   border-radius: 8px;
   border: 1px solid var(--color-input-border);
@@ -443,7 +443,7 @@ input {
   font-size: 0.95rem;
 }
 
-textarea {
+:where(#root) textarea {
   padding: 0.6rem 0.8rem;
   border-radius: 8px;
   border: 1px solid var(--color-input-border);
@@ -455,7 +455,7 @@ textarea {
 }
 
 /* ─── Buttons ───────────────────────────────────────────────── */
-button {
+:where(#root) button {
   padding: 0.6rem 1rem;
   border-radius: 8px;
   border: none;
@@ -465,7 +465,7 @@ button {
   cursor: pointer;
 }
 
-button:disabled {
+:where(#root) button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
