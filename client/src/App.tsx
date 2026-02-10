@@ -136,6 +136,7 @@ import { EndedGameView } from "./app/views/EndedGameView";
 import { PracticeStartModal } from "./app/views/modals/PracticeStartModal";
 import { SettingsModal } from "./app/views/modals/SettingsModal";
 import { LeaveGameModal } from "./app/views/modals/LeaveGameModal";
+import HowToPlay from "./app/components/HowToPlay";
 
 export default function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
@@ -2346,16 +2347,7 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel">
-            <h2>How to Play</h2>
-            <ul>
-              <li>Flip one tile on your turn.</li>
-              <li>Start claims with Enter, or switch to tile input in Settings.</li>
-              <li>Steals are automatic when possible.</li>
-              <li>Steals must rearrange letters (no substring extensions).</li>
-              <li>Game ends 60s after bag is empty.</li>
-            </ul>
-          </section>
+          <HowToPlay preStealEnabled={roomState.preSteal.enabled} />
         </div>
       )}
 

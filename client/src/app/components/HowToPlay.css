@@ -1,0 +1,407 @@
+/* ─── How to Play slideshow ─────────────────────────────────── */
+
+.how-to-play h2 {
+  margin: 0;
+}
+
+.htp-slideshow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ─── Stage ────────────────────────────────────────────────── */
+
+.htp-stage {
+  position: relative;
+  height: 170px;
+  overflow: hidden;
+  background: var(--color-inset);
+  border: 1px solid var(--color-inset-border);
+  border-radius: 10px;
+}
+
+/* ─── Caption ──────────────────────────────────────────────── */
+
+.htp-caption {
+  margin: 0;
+  text-align: center;
+  font-size: 0.92rem;
+  color: var(--color-text-secondary);
+  min-height: 1.4em;
+}
+
+/* ─── Nav (arrows + dots) ──────────────────────────────────── */
+
+.htp-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.htp-arrow {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 120ms, color 120ms;
+  padding: 0;
+  line-height: 1;
+}
+
+.htp-arrow:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+}
+
+.htp-dots {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.htp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-border);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background 200ms, transform 200ms;
+}
+
+.htp-dot:hover {
+  background: var(--color-text-secondary);
+}
+
+.htp-dot.active {
+  background: var(--color-text);
+  transform: scale(1.25);
+}
+
+/* ─── Tutorial tiles ───────────────────────────────────────── */
+
+.htp-tile {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  font-size: 1.1rem;
+  font-weight: 700;
+  background: var(--color-tile-bg);
+  color: var(--color-tile-text);
+  border: 2px solid var(--color-tile-border);
+  border-radius: 7px;
+  box-shadow: 0 2px 4px var(--color-tile-shadow);
+}
+
+.htp-tile-small {
+  width: 30px;
+  height: 30px;
+  font-size: 0.85rem;
+  border-radius: 5px;
+  border-width: 1.5px;
+}
+
+.htp-tile-facedown {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      var(--color-tile-reveal-stripe1) 0 7px,
+      var(--color-tile-reveal-stripe2) 7px 14px
+    );
+  color: rgba(255, 255, 255, 0.6);
+  border-color: var(--color-border);
+  font-size: 1rem;
+}
+
+.htp-tile-claimed {
+  border-color: var(--color-wordle-green);
+  background: var(--color-wordle-green);
+  color: #ffffff;
+}
+
+.htp-tile-opponent {
+  border-color: var(--color-tile-border);
+  background: var(--color-tile-bg);
+  color: var(--color-tile-text);
+}
+
+/* ─── Scene helpers ────────────────────────────────────────── */
+
+.htp-scene {
+  position: absolute;
+  inset: 0;
+}
+
+.htp-label {
+  position: absolute;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.htp-word-group {
+  position: absolute;
+  display: flex;
+  gap: 3px;
+}
+
+/* ─── Winner badge (slide 5) ───────────────────────────────── */
+
+.htp-winner-badge {
+  position: absolute;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-winner-badge-bg);
+  border: 1px solid var(--color-winner-badge-border);
+  color: var(--color-winner-badge-text);
+  animation: htp-badge-pulse 2s ease-in-out infinite;
+}
+
+.htp-bag-icon {
+  position: absolute;
+  width: 44px;
+  height: 50px;
+  border: 2px solid var(--color-border);
+  border-radius: 6px 6px 10px 10px;
+  background: var(--color-bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+/* ─── Pre-steal box (slide 4) ──────────────────────────────── */
+
+.htp-presteal-box {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  background: var(--color-panel);
+  border: 1.5px solid var(--color-border);
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.htp-presteal-box .htp-keyword {
+  color: var(--color-info);
+  font-weight: 700;
+}
+
+/* ───────────────────────────────────────────────────────────── */
+/* Keyframes                                                     */
+/* ───────────────────────────────────────────────────────────── */
+
+/* Slide 1: Flip Tiles */
+
+@keyframes htp-flip {
+  0% {
+    transform: perspective(400px) rotateY(0deg) scale(0.95);
+  }
+  45% {
+    transform: perspective(400px) rotateY(90deg) scale(1.05);
+  }
+  100% {
+    transform: perspective(400px) rotateY(180deg) scale(0.96);
+  }
+}
+
+@keyframes htp-flip-to-revealed {
+  0%, 44% {
+    background:
+      repeating-linear-gradient(
+        -45deg,
+        var(--color-tile-reveal-stripe1) 0 7px,
+        var(--color-tile-reveal-stripe2) 7px 14px
+      );
+    border-color: var(--color-border);
+    color: rgba(255, 255, 255, 0.6);
+  }
+  45%, 100% {
+    background: var(--color-tile-bg);
+    border-color: var(--color-tile-border);
+    color: var(--color-tile-text);
+  }
+}
+
+@keyframes htp-flip-show-letter {
+  0%, 44% {
+    opacity: 0;
+  }
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes htp-flip-hide-pattern {
+  0%, 44% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Slide 2: Claim a Word */
+
+@keyframes htp-highlight {
+  0% {
+    border-color: var(--color-tile-border);
+    background: var(--color-tile-bg);
+    color: var(--color-tile-text);
+  }
+  100% {
+    border-color: var(--color-wordle-green);
+    background: var(--color-wordle-green);
+    color: #ffffff;
+  }
+}
+
+@keyframes htp-slide-down {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(50px);
+  }
+}
+
+@keyframes htp-fade-out {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes htp-slide-down-claim {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(55px) scale(1.06);
+    filter: brightness(1.1);
+  }
+  100% {
+    transform: translateY(55px) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes htp-claim-burst {
+  0% {
+    transform: translateY(50px) scale(0.95);
+    filter: brightness(0.9);
+  }
+  60% {
+    transform: translateY(47px) scale(1.06);
+    filter: brightness(1.12);
+  }
+  100% {
+    transform: translateY(50px) scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* Slide 3: Steal a Word */
+
+@keyframes htp-fly-to-word {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--fly-x), var(--fly-y)) scale(0.8);
+    opacity: 0;
+  }
+}
+
+@keyframes htp-shuffle-out {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+}
+
+@keyframes htp-steal-appear {
+  0% {
+    opacity: 0;
+    transform: translateY(-15px) scale(0.85);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(3px) scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Slide 4: Pre-steal */
+
+@keyframes htp-match-flash {
+  0% {
+    border-color: var(--color-border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    border-color: var(--color-info);
+    box-shadow: 0 0 8px 2px var(--color-info-bg);
+  }
+  100% {
+    border-color: var(--color-info);
+    box-shadow: 0 0 4px 1px var(--color-info-bg);
+  }
+}
+
+/* Slide 5: Game End */
+
+@keyframes htp-badge-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+/* ─── Responsive ───────────────────────────────────────────── */
+
+@media (max-width: 960px) {
+  .htp-stage {
+    height: 150px;
+  }
+}
