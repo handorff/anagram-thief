@@ -557,6 +557,10 @@ label.row {
   font-size: 0.9rem;
 }
 
+.muted.compact {
+  margin-block: 0.15em;
+}
+
 /* ─── Player list ───────────────────────────────────────────── */
 .player-list {
   display: flex;

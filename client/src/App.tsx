@@ -2311,13 +2311,12 @@ export default function App() {
       {roomState && roomState.status === "lobby" && (
         <div className="grid">
           <section className="panel">
-            <h2>Lobby</h2>
-            <p className="muted">Room ID: {roomState.id}</p>
-            <p className="muted">
+            <h2>Waiting for players</h2>
+            <p className="muted compact">Claim timer: {roomState.claimTimer.seconds}s</p>
+            <p className="muted compact">Pre-steal: {roomState.preSteal.enabled ? "on" : "off"}</p>
+            <p className="muted compact">
               Flip timer: {roomState.flipTimer.enabled ? `${roomState.flipTimer.seconds}s` : "off"}
             </p>
-            <p className="muted">Claim timer: {roomState.claimTimer.seconds}s</p>
-            <p className="muted">Pre-steal: {roomState.preSteal.enabled ? "on" : "off"}</p>
             {!roomState.isPublic && roomState.code && <p className="muted">Code: {roomState.code}</p>}
             {!roomState.isPublic && roomState.code && isHost && (
               <div className="button-row">
