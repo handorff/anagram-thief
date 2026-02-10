@@ -2435,57 +2435,59 @@ export default function App() {
               </button>
             )}
           </div>
-          {!isBottomPanelChatMode && (
-            <div ref={gameLogListRef} className="game-log-list">
-              {gameLogEntries.length === 0 && (
-                <div className="game-log-empty muted">No gameplay events yet.</div>
-              )}
-              {gameLogEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className={`game-log-row ${entry.kind === "error" ? "error" : ""}`}
-                >
-                  <span className="game-log-time">{formatLogTime(entry.timestamp)}</span>
-                  <span className="game-log-text">{entry.text}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {isBottomPanelChatMode && (
-            <>
-              <div ref={chatListRef} className="game-log-list">
-                {chatMessages.length === 0 && (
-                  <div className="game-log-empty muted">No chat messages yet.</div>
+          <div className="game-log-body">
+            {!isBottomPanelChatMode && (
+              <div ref={gameLogListRef} className="game-log-list">
+                {gameLogEntries.length === 0 && (
+                  <div className="game-log-empty muted">No gameplay events yet.</div>
                 )}
-                {chatMessages.map((message) => (
-                  <div key={message.id} className="chat-log-row">
-                    <span className="game-log-time">{formatLogTime(message.timestamp)}</span>
-                    <span className="chat-log-message">
-                      <span className="chat-log-sender">{message.senderName}:</span> {message.text}
-                    </span>
+                {gameLogEntries.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`game-log-row ${entry.kind === "error" ? "error" : ""}`}
+                  >
+                    <span className="game-log-time">{formatLogTime(entry.timestamp)}</span>
+                    <span className="game-log-text">{entry.text}</span>
                   </div>
                 ))}
               </div>
-              <form
-                className="chat-composer"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  handleChatSubmit();
-                }}
-              >
-                <input
-                  value={chatDraft}
-                  onChange={(event) => setChatDraft(event.target.value)}
-                  placeholder={isSpectator ? "Spectators can read chat only." : "Type a message..."}
-                  maxLength={MAX_CHAT_MESSAGE_LENGTH}
-                  disabled={isSpectator}
-                />
-                <button type="submit" disabled={isSpectator || !chatDraft.trim()}>
-                  Send
-                </button>
+            )}
+            {isBottomPanelChatMode && (
+              <>
+                <div ref={chatListRef} className="game-log-list">
+                  {chatMessages.length === 0 && (
+                    <div className="game-log-empty muted">No chat messages yet.</div>
+                  )}
+                  {chatMessages.map((message) => (
+                    <div key={message.id} className="chat-log-row">
+                      <span className="game-log-time">{formatLogTime(message.timestamp)}</span>
+                      <span className="chat-log-message">
+                        <span className="chat-log-sender">{message.senderName}:</span> {message.text}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <form
+                  className="chat-composer"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    handleChatSubmit();
+                  }}
+                >
+                  <input
+                    value={chatDraft}
+                    onChange={(event) => setChatDraft(event.target.value)}
+                    placeholder={isSpectator ? "Spectators can read chat only." : "Type a message..."}
+                    maxLength={MAX_CHAT_MESSAGE_LENGTH}
+                    disabled={isSpectator}
+                  />
+                  <button type="submit" disabled={isSpectator || !chatDraft.trim()}>
+                    Send
+                  </button>
               </form>
             </>
           )}
+          </div>
         </section>
       )}
 

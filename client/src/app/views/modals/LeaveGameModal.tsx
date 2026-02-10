@@ -9,7 +9,7 @@ export function LeaveGameModal({ onStay, onLeave }: Props) {
       <div className="panel join-modal leave-confirm-modal">
         <h2>Leave this game?</h2>
         <p className="muted">
-          This removes you from the current game, and you will not be able to rejoin by reloading.
+          If you leave this game, you won't be able to rejoin.
         </p>
         <div className="button-row">
           <button className="button-secondary" onClick={onStay}>

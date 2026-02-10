@@ -1599,8 +1599,44 @@ label.row {
   border-top: 1px solid var(--color-border);
   border-radius: 0;
   display: flex;
+  flex-direction: row;
+  gap: 0;
+  height: calc((3 * 1.55rem) + (2 * 0.45rem) + 1.1rem + 0.75rem);
+}
+
+.game-log-controls {
+  display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0.3rem;
+  flex: none;
+  border-right: 1px solid var(--color-border);
+  padding-right: 0.6rem;
+  margin-right: 0.6rem;
+}
+
+.game-log-mode-button {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.game-log-mode-button.active {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  border-color: var(--color-accent);
+}
+
+.game-log-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 0.45rem;
 }
 
 .game-log-list {
@@ -1609,31 +1645,10 @@ label.row {
   gap: 0.45rem;
   position: relative;
   width: 100%;
-  max-height: calc((3 * 1.55rem) + (2 * 0.45rem));
+  flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 0.35rem;
-}
-
-.game-log-controls {
-  display: flex;
-  gap: 0.4rem;
-}
-
-.game-log-mode-button {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
-  border-radius: 999px;
-  padding: 0.3rem 0.75rem;
-  font-size: 0.8rem;
-  line-height: 1.2;
-}
-
-.game-log-mode-button.active {
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
-  border-color: var(--color-accent);
 }
 
 .game-log-row {
@@ -1773,10 +1788,6 @@ label.row {
 
   .game-log {
     padding: 0.55rem 1rem 0.75rem;
-  }
-
-  .game-log-list {
-    width: 100%;
   }
 
   .chat-composer {
