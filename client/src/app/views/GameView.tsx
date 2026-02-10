@@ -160,7 +160,7 @@ export function GameView({
             </strong>
             <button
               onClick={onFlip}
-              disabled={isSpectator || gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive}
+              disabled={isSpectator || gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive || !!claimWindow}
             >
               Flip Tile
             </button>

@@ -188,7 +188,7 @@ export default function App() {
   const [createFlipTimerEnabled, setCreateFlipTimerEnabled] = useState(false);
   const [createFlipTimerSeconds, setCreateFlipTimerSeconds] = useState(DEFAULT_FLIP_TIMER_SECONDS);
   const [createClaimTimerSeconds, setCreateClaimTimerSeconds] = useState(DEFAULT_CLAIM_TIMER_SECONDS);
-  const [createPreStealEnabled, setCreatePreStealEnabled] = useState(false);
+  const [createPreStealEnabled, setCreatePreStealEnabled] = useState(true);
 
   const [privateInviteCopyStatus, setPrivateInviteCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
@@ -1460,8 +1460,9 @@ export default function App() {
     if (!roomId) return;
     if (isSpectator) return;
     if (isFlipRevealActive) return;
+    if (claimWindow) return;
     socket.emit("game:flip", { roomId });
-  }, [roomId, isSpectator, isFlipRevealActive]);
+  }, [roomId, isSpectator, isFlipRevealActive, claimWindow]);
 
   const handleClaimIntent = useCallback(() => {
     if (!roomId) return;
@@ -1897,6 +1898,7 @@ export default function App() {
       const isSpace = event.code === "Space" || event.key === " " || event.key === "Spacebar";
       if (isSpace) {
         if (isFlipRevealActive) return;
+        if (claimWindow) return;
         if (gameState?.turnPlayerId !== selfPlayerId) return;
         event.preventDefault();
         handleFlip();

@@ -53,7 +53,7 @@ const END_TIMER_MS = 60_000;
 const DEFAULT_FLIP_TIMER_SECONDS = 15;
 const MIN_FLIP_TIMER_SECONDS = 1;
 const MAX_FLIP_TIMER_SECONDS = 60;
-const DEFAULT_CLAIM_TIMER_SECONDS = 3;
+const DEFAULT_CLAIM_TIMER_SECONDS = 7;
 const MIN_CLAIM_TIMER_SECONDS = 1;
 const MAX_CLAIM_TIMER_SECONDS = 10;
 const DEFAULT_PRACTICE_TIMER_SECONDS = 60;
@@ -1591,6 +1591,7 @@ function scheduleClaimWindowTimeout(
       const claimantId = current.claimWindow.playerId;
       clearClaimWindow(current);
       startClaimCooldown(current, claimantId);
+      scheduleFlipTimer(current);
       emitErrorToPlayer(claimantId, "Claim window expired.");
       emitGameState(current.roomId);
     });
@@ -1599,6 +1600,7 @@ function scheduleClaimWindowTimeout(
 
 function openClaimWindow(game: GameStateInternal, playerId: string) {
   clearClaimWindow(game);
+  clearFlipTimer(game);
   const token = randomUUID();
   const durationMs = game.claimTimer.seconds * 1000;
   const endsAt = Date.now() + durationMs;
@@ -1644,6 +1646,7 @@ function scheduleEndTimer(game: GameStateInternal) {
 function beginPendingFlip(game: GameStateInternal, playerId: string): boolean {
   if (game.status !== "in-game") return false;
   if (game.pendingFlip) return false;
+  if (game.claimWindow) return false;
   if (game.bag.length === 0) return false;
   clearFlipTimer(game);
 
@@ -2559,7 +2562,7 @@ io.on("connection", (socket) => {
       const resolvedFlipTimerEnabled = Boolean(flipTimerEnabled);
       const resolvedFlipTimerSeconds = clampFlipTimerSeconds(flipTimerSeconds);
       const resolvedClaimTimerSeconds = clampClaimTimerSeconds(claimTimerSeconds);
-      const resolvedPreStealEnabled = Boolean(preStealEnabled);
+      const resolvedPreStealEnabled = preStealEnabled === false ? false : true;
       const roomId = randomUUID();
       const code = isPublic ? undefined : generatePrivateRoomCode();
       const sanitizedPlayerName = sanitizeName(resolvedPlayerName);
@@ -2876,7 +2879,7 @@ io.on("connection", (socket) => {
       claimWindow: null,
       claimCooldowns: {},
       claimCooldownTimeouts: new Map(),
-      preStealEnabled: room.preSteal?.enabled ?? false,
+      preStealEnabled: room.preSteal?.enabled ?? true,
       preStealPrecedenceOrder: [...turnOrder],
       lastClaimEvent: null,
       replay: { steps: [] },
@@ -2990,6 +2993,10 @@ io.on("connection", (socket) => {
       }
       if (game.pendingFlip) {
         emitError(socket, "A tile is already being revealed.");
+        return;
+      }
+      if (game.claimWindow) {
+        emitError(socket, "Wait for the current claim to finish.");
         return;
       }
       if (game.turnPlayerId !== playerId) {
@@ -3210,6 +3217,7 @@ io.on("connection", (socket) => {
         const claimantId = game.claimWindow.playerId;
         clearClaimWindow(game);
         startClaimCooldown(game, claimantId);
+        scheduleFlipTimer(game);
         emitErrorToPlayer(claimantId, "Claim window expired.");
         emitGameState(roomId);
       }
@@ -3269,6 +3277,7 @@ io.on("connection", (socket) => {
         if (game.claimWindow.endsAt <= Date.now()) {
           clearClaimWindow(game);
           startClaimCooldown(game, player.id);
+          scheduleFlipTimer(game);
           emitError(socket, "Claim window expired.");
           emitGameState(roomId);
           return;
@@ -3279,6 +3288,7 @@ io.on("connection", (socket) => {
         if (!normalized) {
           clearClaimWindow(game);
           startClaimCooldown(game, player.id);
+          scheduleFlipTimer(game);
           emitError(socket, "Enter a word to claim.");
           emitGameState(roomId);
           return;
@@ -3286,6 +3296,7 @@ io.on("connection", (socket) => {
         if (!/^[A-Z]+$/.test(normalized)) {
           clearClaimWindow(game);
           startClaimCooldown(game, player.id);
+          scheduleFlipTimer(game);
           emitError(socket, "Word must contain only letters A-Z.");
           emitGameState(roomId);
           return;
@@ -3293,6 +3304,7 @@ io.on("connection", (socket) => {
         if (!isValidWord(normalized, wordSet)) {
           clearClaimWindow(game);
           startClaimCooldown(game, player.id);
+          scheduleFlipTimer(game);
           emitError(socket, "Word is not valid.");
           emitGameState(roomId);
           return;
@@ -3302,12 +3314,14 @@ io.on("connection", (socket) => {
         if (!claimResult) {
           clearClaimWindow(game);
           startClaimCooldown(game, player.id);
+          scheduleFlipTimer(game);
           emitError(socket, "Not enough tiles in the center to make that word.");
           emitGameState(roomId);
           return;
         }
 
         clearClaimWindow(game);
+        scheduleFlipTimer(game);
         emitGameState(roomId, "claim-succeeded");
       });
     }
