@@ -2201,6 +2201,10 @@ export default function App() {
           </div>
         </header>
 
+        <div className={`disconnect-banner${!isConnected ? " visible" : ""}`}>
+          <span className="dot" /> Connection lost — reconnecting…
+        </div>
+
       {!roomState && !practiceState.active && !isReplayMode && lobbyView === "list" && (
         <LobbyListView
           openLobbyRooms={openLobbyRooms}
