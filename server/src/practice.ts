@@ -8,6 +8,7 @@ import type {
   Tile
 } from "../../shared/types.js";
 import { MIN_WORD_LENGTH, normalizeWord } from "../../shared/wordValidation.js";
+import { doFamilySignaturesOverlap, getWordFamilySignatures } from "./wordForms.js";
 
 const LETTER_A_CODE = "A".charCodeAt(0);
 const LETTER_PATTERN = /^[A-Z]+$/;
@@ -21,12 +22,14 @@ type DictionaryEntry = {
   word: string;
   counts: LetterCounts;
   length: number;
+  familySignatures: readonly string[];
 };
 
 type ExistingWordMeta = {
   text: string;
   length: number;
   counts: LetterCounts;
+  familySignatures: readonly string[];
 };
 
 export type DifficultyProfile = {
@@ -166,7 +169,8 @@ function buildEngineState(wordSet: Set<string>): PracticeEngineState {
     .map((word) => ({
       word,
       counts: toLetterCounts(word),
-      length: word.length
+      length: word.length,
+      familySignatures: getWordFamilySignatures(word)
     }));
 
   const wordToEntry = new Map(entries.map((entry) => [entry.word, entry]));
@@ -191,7 +195,8 @@ function parseExistingWords(words: PracticeExistingWord[]): ExistingWordMeta[] {
     .map((text) => ({
       text,
       length: text.length,
-      counts: toLetterCounts(text)
+      counts: toLetterCounts(text),
+      familySignatures: getWordFamilySignatures(text)
     }));
 }
 
@@ -270,7 +275,7 @@ function solvePuzzleWithState(state: PracticeEngineState, puzzle: PracticePuzzle
 
     for (const existingWord of existingWords) {
       if (entry.length <= existingWord.length) continue;
-      if (entry.word.includes(existingWord.text)) continue;
+      if (doFamilySignaturesOverlap(entry.familySignatures, existingWord.familySignatures)) continue;
       if (!containsAllLetters(entry.counts, existingWord.counts)) continue;
 
       const requiredFromCenter = subtractLetterCounts(entry.counts, existingWord.counts);

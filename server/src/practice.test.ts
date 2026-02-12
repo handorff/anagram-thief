@@ -37,7 +37,7 @@ test("solvePuzzle finds all center-only words", () => {
   }
 });
 
-test("solvePuzzle only includes valid steals and excludes substring extensions", () => {
+test("solvePuzzle excludes same-family extensions and keeps unrelated steals", () => {
   const dictionary = new Set(["RATE", "STARE", "RATES", "TEAR"]);
   const engine = createPracticeEngine(dictionary);
   const puzzle = makePuzzle("S", ["RATE"]);
@@ -51,6 +51,20 @@ test("solvePuzzle only includes valid steals and excludes substring extensions",
   assert.equal(stare.stolenFrom, "RATE");
 
   assert.equal(options.some((option) => option.word === "RATES"), false);
+});
+
+test("solvePuzzle allows containment steals when words are from different families", () => {
+  const dictionary = new Set(["MILE", "MILES", "SMILE"]);
+  const engine = createPracticeEngine(dictionary);
+  const puzzle = makePuzzle("S", ["MILE"]);
+  const options = engine.solvePuzzle(puzzle);
+
+  const smile = options.find((option) => option.word === "SMILE");
+  assert.ok(smile);
+  assert.equal(smile.source, "steal");
+  assert.equal(smile.stolenFrom, "MILE");
+
+  assert.equal(options.some((option) => option.word === "MILES"), false);
 });
 
 test("duplicate derivations collapse to one row using the best score", () => {

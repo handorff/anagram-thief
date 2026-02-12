@@ -44,6 +44,7 @@ import {
 } from "./practice.js";
 import { resolvePracticeStartRequest, validateCustomPracticePuzzle } from "./practiceShare.js";
 import { createTimedOutPracticeResult } from "./practiceTimer.js";
+import { areWordsSameFamily } from "./wordForms.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1231,7 +1232,7 @@ function getClaimSelection(
         continue;
       }
 
-      if (normalizedWord.includes(target.text)) continue;
+      if (areWordsSameFamily(normalizedWord, target.text)) continue;
 
       const selectedTiles = selectTilesForCounts(required, game.centerTiles);
       if (!selectedTiles) continue;
@@ -1299,7 +1300,7 @@ function getClaimSelection(
 }
 
 function entryMatchesExistingWord(entry: PreStealEntry, targetWord: Word): boolean {
-  if (entry.claimWord.includes(targetWord.text)) return false;
+  if (areWordsSameFamily(entry.claimWord, targetWord.text)) return false;
   const claimCounts = countLetters(entry.claimWord);
   const targetCounts = countLetters(targetWord.text);
   const triggerCounts = countLetters(entry.triggerLetters);
@@ -1901,7 +1902,7 @@ function handlePlayerDisconnect(roomId: string, playerId: string) {
 function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal {
   const replay = normalizeReplay(persistedGame.replay);
   const lastReplayStep = replay.steps[replay.steps.length - 1];
-  return {
+  const hydratedGame: GameStateInternal = {
     roomId: persistedGame.roomId,
     status: persistedGame.status,
     bag: clone(persistedGame.bag),
@@ -1931,6 +1932,12 @@ function hydrateGameState(persistedGame: PersistedGameState): GameStateInternal 
     lastReplaySnapshotHash: lastReplayStep ? buildReplaySnapshotHash(lastReplayStep.state) : null,
     replayAnalysisCache: new Map()
   };
+
+  if (hydratedGame.preStealEnabled) {
+    revalidateAllPreStealEntries(hydratedGame);
+  }
+
+  return hydratedGame;
 }
 
 function restoreGameTimers(game: GameStateInternal) {

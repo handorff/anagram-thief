@@ -98,7 +98,7 @@ function makeGame({
   };
 }
 
-test("isPreStealEntryValid accepts and rejects based on existing words and substring rule", () => {
+test("isPreStealEntryValid accepts and rejects based on same-word forms", () => {
   const sourceWord = makeWord("RATE", "p-source", "w-rate");
   const owner = makePlayer("p-owner", "Owner", [], []);
   const source = makePlayer("p-source", "Source", [sourceWord], []);
@@ -108,7 +108,7 @@ test("isPreStealEntryValid accepts and rejects based on existing words and subst
 
   assert.equal(isPreStealEntryValid(game as any, makeEntry("e-ok", "S", "STARE")), true);
   assert.equal(isPreStealEntryValid(game as any, makeEntry("e-bad", "Z", "STARE")), false);
-  assert.equal(isPreStealEntryValid(game as any, makeEntry("e-substring", "S", "RATES")), false);
+  assert.equal(isPreStealEntryValid(game as any, makeEntry("e-same-form", "S", "RATES")), false);
 });
 
 test("revalidateAllPreStealEntries removes invalid entries when source words change", () => {
@@ -219,4 +219,24 @@ test("executeClaim supports manual claims with and without pre-steal mode", () =
   assert.equal(enabledPlayer.words.length, 1);
   assert.equal(enabledGame.lastClaimEvent?.source, "manual");
   assert.equal(enabledGame.lastClaimEvent?.movedToBottomOfPreStealPrecedence, false);
+});
+
+test("executeClaim blocks same-family steals and allows unrelated containment steals", () => {
+  const source = makePlayer("p-source", "Source", [makeWord("MILE", "p-source", "w-mile")], []);
+  const claimant = makePlayer("p-claimant", "Claimant");
+  const game = makeGame({
+    players: [claimant, source],
+    centerLetters: "S"
+  });
+
+  const blocked = executeClaim(game as any, claimant, "MILES", "manual");
+  assert.equal(blocked, null);
+  assert.equal(claimant.words.length, 0);
+  assert.equal(source.words.length, 1);
+
+  const allowed = executeClaim(game as any, claimant, "SMILE", "manual");
+  assert.ok(allowed);
+  assert.equal(claimant.words.length, 1);
+  assert.equal(claimant.words[0].text, "SMILE");
+  assert.equal(source.words.length, 0);
 });
