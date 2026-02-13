@@ -194,6 +194,7 @@ export default function App() {
   const [privateInviteCopyStatus, setPrivateInviteCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [showLeaveGameConfirm, setShowLeaveGameConfirm] = useState(false);
   const [showPracticeStartPrompt, setShowPracticeStartPrompt] = useState(false);
+  const [practiceStartPromptMode, setPracticeStartPromptMode] = useState<"start" | "difficulty">("start");
   const [practiceStartDifficulty, setPracticeStartDifficulty] = useState<PracticeDifficulty | null>(null);
   const [practiceStartTimerEnabled, setPracticeStartTimerEnabled] = useState(false);
   const [practiceStartTimerSeconds, setPracticeStartTimerSeconds] = useState(DEFAULT_PRACTICE_TIMER_SECONDS);
@@ -955,6 +956,7 @@ export default function App() {
   const handleStartPractice = () => {
     if (roomState) return;
     setLobbyError(null);
+    setPracticeStartPromptMode("start");
     setPracticeStartDifficulty(null);
     setPracticeStartTimerEnabled(false);
     setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
@@ -962,15 +964,36 @@ export default function App() {
     setLobbyView("list");
   };
 
+  const handleOpenPracticeDifficultyPicker = () => {
+    if (!practiceState.active) return;
+    if (roomState) return;
+    setPracticeStartPromptMode("difficulty");
+    setPracticeStartDifficulty(clampPracticeDifficulty(practiceState.currentDifficulty));
+    setPracticeStartTimerEnabled(false);
+    setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
+    setShowPracticeStartPrompt(true);
+  };
+
   const handleConfirmPracticeStart = () => {
     if (practiceStartDifficulty === null) return;
     setLobbyError(null);
-    socket.emit("practice:start", {
-      difficulty: practiceStartDifficulty,
-      timerEnabled: practiceStartTimerEnabled,
-      timerSeconds: clampPracticeTimerSeconds(practiceStartTimerSeconds)
-    });
+    if (practiceStartPromptMode === "difficulty" && practiceState.active) {
+      socket.emit("practice:set-difficulty", {
+        difficulty: clampPracticeDifficulty(practiceStartDifficulty)
+      });
+      socket.emit("practice:skip");
+      setPracticeWord("");
+      setPracticeSubmitError(null);
+      setPendingResultAutoSubmit(null);
+    } else {
+      socket.emit("practice:start", {
+        difficulty: practiceStartDifficulty,
+        timerEnabled: practiceStartTimerEnabled,
+        timerSeconds: clampPracticeTimerSeconds(practiceStartTimerSeconds)
+      });
+    }
     setShowPracticeStartPrompt(false);
+    setPracticeStartPromptMode("start");
     setPracticeStartDifficulty(null);
     setPracticeStartTimerEnabled(false);
     setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
@@ -978,6 +1001,7 @@ export default function App() {
 
   const handleCancelPracticeStart = () => {
     setShowPracticeStartPrompt(false);
+    setPracticeStartPromptMode("start");
     setPracticeStartDifficulty(null);
     setPracticeStartTimerEnabled(false);
     setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
@@ -1058,12 +1082,6 @@ export default function App() {
       setEditorValidationMessageFromServer("Could not copy link. Please try again.");
       showEditorShareStatus("failed");
     }
-  };
-
-  const handlePracticeDifficultyChange = (value: number) => {
-    socket.emit("practice:set-difficulty", {
-      difficulty: clampPracticeDifficulty(value)
-    });
   };
 
   const handlePracticeSubmit = () => {
@@ -1873,6 +1891,7 @@ export default function App() {
   useEffect(() => {
     if (!practiceState.active) return;
     setShowPracticeStartPrompt(false);
+    setPracticeStartPromptMode("start");
     setPracticeStartDifficulty(null);
     setPracticeStartTimerEnabled(false);
     setPracticeStartTimerSeconds(DEFAULT_PRACTICE_TIMER_SECONDS);
@@ -2287,7 +2306,7 @@ export default function App() {
           practiceResultShareStatus={practiceResultShareStatus}
           onSharePracticePuzzle={handleSharePracticePuzzle}
           onSharePracticeResult={handleSharePracticeResult}
-          onPracticeDifficultyChange={handlePracticeDifficultyChange}
+          onOpenPracticeDifficultyPicker={handleOpenPracticeDifficultyPicker}
           onPracticeNext={handlePracticeNext}
           onPracticeExit={handlePracticeExit}
           practiceTimerRemainingSeconds={practiceTimerRemainingSeconds}
@@ -2491,8 +2510,11 @@ export default function App() {
         </section>
       )}
 
-      {showPracticeStartPrompt && !practiceState.active && !roomState && (
+      {showPracticeStartPrompt && !roomState && (
         <PracticeStartModal
+          title={practiceStartPromptMode === "difficulty" ? "Change Difficulty" : "Start Practice Mode"}
+          confirmLabel={practiceStartPromptMode === "difficulty" ? "Apply difficulty" : "Start practice"}
+          showTimerSettings={practiceStartPromptMode !== "difficulty"}
           practiceStartDifficulty={practiceStartDifficulty}
           setPracticeStartDifficulty={setPracticeStartDifficulty}
           practiceStartTimerEnabled={practiceStartTimerEnabled}

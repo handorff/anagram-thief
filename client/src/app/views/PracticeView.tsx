@@ -1,7 +1,9 @@
-import type {
-  Dispatch,
-  RefObject,
-  SetStateAction
+import {
+  useEffect,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction
 } from "react";
 import type {
   PracticeModeState,
@@ -26,7 +28,7 @@ type Props = {
   practiceResultShareStatus: "copied" | "failed" | null;
   onSharePracticePuzzle: () => void;
   onSharePracticeResult: () => void;
-  onPracticeDifficultyChange: (value: number) => void;
+  onOpenPracticeDifficultyPicker: () => void;
   onPracticeNext: () => void;
   onPracticeExit: () => void;
   practiceTimerRemainingSeconds: number | null;
@@ -54,7 +56,7 @@ export function PracticeView({
   practiceResultShareStatus,
   onSharePracticePuzzle,
   onSharePracticeResult,
-  onPracticeDifficultyChange,
+  onOpenPracticeDifficultyPicker,
   onPracticeNext,
   onPracticeExit,
   practiceTimerRemainingSeconds,
@@ -73,67 +75,69 @@ export function PracticeView({
   showAllPracticeOptions,
   setShowAllPracticeOptions
 }: Props) {
+  const [isShareChoiceOpen, setIsShareChoiceOpen] = useState(false);
+  const isResultPhase = practiceState.phase === "result";
+
+  const canShareResult = Boolean(
+    isResultPhase &&
+      practiceResult &&
+      !practiceResult.timedOut &&
+      practiceResult.submittedWordNormalized
+  );
+
+  useEffect(() => {
+    if (!practicePuzzle) {
+      setIsShareChoiceOpen(false);
+    }
+  }, [practicePuzzle]);
+
+  useEffect(() => {
+    if (!isResultPhase) {
+      setIsShareChoiceOpen(false);
+    }
+  }, [isResultPhase]);
+
   return (
     <div className="practice">
       <section className="panel practice-board">
         <div className="practice-header">
-          <div>
+          <div className="practice-header-summary">
             <h2>Practice Mode</h2>
-            <p className="muted">Current puzzle difficulty: {practiceState.currentDifficulty}</p>
           </div>
           <div className="practice-header-actions">
             {practicePuzzle && (
               <div className="practice-share-action">
-                <button className="button-secondary" type="button" onClick={onSharePracticePuzzle}>
-                  {practiceShareStatus === "copied"
-                    ? "Copied!"
-                    : practiceShareStatus === "failed"
-                      ? "Copy failed"
-                      : "Share"}
+                <button
+                  className="icon-button practice-share-icon-button"
+                  type="button"
+                  onClick={() => {
+                    if (isResultPhase) {
+                      setIsShareChoiceOpen(true);
+                      return;
+                    }
+                    onSharePracticePuzzle();
+                  }}
+                  aria-label={isResultPhase ? "Share options" : "Share puzzle"}
+                  title={isResultPhase ? "Share options" : "Share puzzle"}
+                >
+                  <span aria-hidden="true">
+                    {!isResultPhase && practiceShareStatus === "copied"
+                      ? "✓"
+                      : !isResultPhase && practiceShareStatus === "failed"
+                        ? "!"
+                        : "↗"}
+                  </span>
                 </button>
               </div>
             )}
-            {practicePuzzle &&
-              practiceState.phase === "result" &&
-              practiceResult &&
-              !practiceResult.timedOut &&
-              practiceResult.submittedWordNormalized && (
-              <div className="practice-share-action">
-                <button className="button-secondary" type="button" onClick={onSharePracticeResult}>
-                  {practiceResultShareStatus === "copied"
-                    ? "Copied!"
-                    : practiceResultShareStatus === "failed"
-                      ? "Copy failed"
-                      : "Share result"}
-                </button>
-              </div>
-            )}
-            {practiceState.phase === "result" && practiceResult && (
-              <>
-                <div className="practice-difficulty-control" aria-label="Next puzzle difficulty">
-                  <div className="practice-difficulty-segmented" role="group">
-                    {[1, 2, 3, 4, 5].map((level) => (
-                      <button
-                        key={level}
-                        type="button"
-                        className={
-                          practiceState.queuedDifficulty === level
-                            ? "practice-difficulty-option active"
-                            : "practice-difficulty-option"
-                        }
-                        onClick={() => onPracticeDifficultyChange(level)}
-                        aria-pressed={practiceState.queuedDifficulty === level}
-                      >
-                        {level}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={onPracticeNext}>Next Puzzle</button>
-              </>
-            )}
-            <button className="button-secondary" onClick={onPracticeExit}>
-              Exit Practice
+            <button
+              className="icon-button practice-exit-icon-button"
+              type="button"
+              onClick={onPracticeExit}
+              aria-label="Exit practice"
+              title="Exit practice"
+            >
+              <span aria-hidden="true">✕</span>
             </button>
           </div>
         </div>
@@ -232,11 +236,11 @@ export function PracticeView({
                     )}
                   </div>
                   <div className="button-row">
+                    <button className="button-secondary" onClick={onOpenPracticeDifficultyPicker}>
+                      Change Difficulty
+                    </button>
                     <button className="button-secondary" onClick={onPracticeSkip}>
                       Skip Puzzle
-                    </button>
-                    <button className="button-secondary" onClick={onPracticeExit}>
-                      Exit Practice
                     </button>
                   </div>
                 </>
@@ -245,6 +249,9 @@ export function PracticeView({
 
             {practiceState.phase === "result" && practiceResult && (
               <div className="practice-result-panel">
+                <button className="practice-next-puzzle-button" onClick={onPracticeNext}>
+                  Next Puzzle
+                </button>
                 <div className="practice-result">
                   <div className="practice-result-summary">
                     <div className="practice-result-summary-header">
@@ -297,6 +304,59 @@ export function PracticeView({
           <div className="muted">Loading puzzle...</div>
         )}
       </section>
+      {isShareChoiceOpen && (
+        <div className="join-overlay practice-share-choice-overlay">
+          <div className="panel join-modal practice-share-choice-modal">
+            <div className="practice-share-choice-header">
+              <h3>Share</h3>
+              <button
+                type="button"
+                className="icon-button practice-share-choice-close"
+                onClick={() => setIsShareChoiceOpen(false)}
+                aria-label="Close share options"
+                title="Close"
+              >
+                <span aria-hidden="true">✕</span>
+              </button>
+            </div>
+            <p className="muted">What do you want to share?</p>
+            <div className="practice-share-choice-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsShareChoiceOpen(false);
+                  onSharePracticePuzzle();
+                }}
+              >
+                {practiceShareStatus === "copied"
+                  ? "Puzzle copied!"
+                  : practiceShareStatus === "failed"
+                    ? "Puzzle copy failed"
+                    : "Share puzzle"}
+              </button>
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={!canShareResult}
+                onClick={() => {
+                  if (!canShareResult) return;
+                  setIsShareChoiceOpen(false);
+                  onSharePracticeResult();
+                }}
+              >
+                {practiceResultShareStatus === "copied"
+                  ? "Result copied!"
+                  : practiceResultShareStatus === "failed"
+                    ? "Result copy failed"
+                    : "Share result"}
+              </button>
+            </div>
+            {!canShareResult && (
+              <p className="muted">Result sharing is available after a valid submission.</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

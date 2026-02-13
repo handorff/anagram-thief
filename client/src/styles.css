@@ -701,6 +701,17 @@ label.row {
   gap: 1rem;
 }
 
+.practice-header-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.practice-header-summary h2 {
+  margin: 0;
+}
+
 .practice-header-actions {
   display: flex;
   align-items: center;
@@ -710,6 +721,57 @@ label.row {
 .practice-share-action {
   display: inline-flex;
   align-items: center;
+}
+
+.practice-share-icon-button {
+  width: 32px;
+  height: 32px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.practice-exit-icon-button {
+  width: 32px;
+  height: 32px;
+  font-size: 1rem;
+  line-height: 1;
+  background: var(--color-danger);
+  color: #ffffff;
+}
+
+.practice-exit-icon-button:hover {
+  filter: brightness(1.05);
+}
+
+.practice-share-choice-overlay {
+  padding: 1rem;
+}
+
+.practice-share-choice-modal.join-modal {
+  width: min(420px, calc(100vw - 2rem));
+  box-sizing: border-box;
+  justify-self: center;
+}
+
+.practice-share-choice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.practice-share-choice-header h3 {
+  margin: 0;
+}
+
+.practice-share-choice-close {
+  flex: none;
+}
+
+.practice-share-choice-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
 .practice-editor {
@@ -797,6 +859,16 @@ label.row {
   gap: 0.9rem;
 }
 
+.practice-next-puzzle-button {
+  background: var(--color-green);
+  color: #ffffff;
+  border: 1px solid var(--color-green-border);
+}
+
+.practice-next-puzzle-button:hover {
+  filter: brightness(1.05);
+}
+
 .practice-result-summary {
   border-radius: 8px;
   border: 1px solid var(--color-border);
@@ -869,6 +941,10 @@ label.row {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+  max-height: min(52dvh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.2rem;
 }
 
 .practice-option {
@@ -1512,6 +1588,21 @@ label.row {
   gap: 1.1rem;
 }
 
+.practice-start-difficulty-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.practice-start-difficulty-label {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+}
+
 .remaining-tiles-modal {
   width: min(520px, 95vw);
   max-height: min(82vh, 760px);
@@ -1557,10 +1648,19 @@ label.row {
   justify-content: center;
 }
 
+.practice-start-difficulty-picker .practice-difficulty-option {
+  min-width: 2.5rem;
+  padding: 0.5rem 0.8rem;
+  font-size: 1rem;
+}
+
 .practice-start-timer-toggle {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.55rem;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .practice-start-timer-toggle input {
@@ -1718,8 +1818,60 @@ label.row {
 
 /* ─── Responsive ────────────────────────────────────────────── */
 @media (max-width: 960px) {
+  .page {
+    gap: 1rem;
+  }
+
+  .grid {
+    gap: 1rem;
+  }
+
+  .panel {
+    padding: 1rem;
+    gap: 0.8rem;
+  }
+
   .lobby-grid {
     grid-template-columns: 1fr;
+  }
+
+  .lobby-grid .panel {
+    min-height: 0;
+    padding: 1rem;
+  }
+
+  .practice-start-overlay {
+    padding: 0;
+  }
+
+  .practice-start-modal.join-modal {
+    width: 100vw;
+    min-height: 100dvh;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .practice-start-modal {
+    justify-content: flex-start;
+  }
+
+  .practice-start-difficulty-group {
+    gap: 0.7rem;
+  }
+
+  .practice-start-difficulty-label {
+    font-size: 0.9rem;
+  }
+
+  .practice-start-difficulty-picker {
+    justify-content: flex-start;
+  }
+
+  .practice-start-difficulty-picker .practice-difficulty-option {
+    min-width: 2.9rem;
+    padding: 0.65rem 0.9rem;
+    font-size: 1.05rem;
   }
 
   .page.has-game-log {
@@ -1745,8 +1897,42 @@ label.row {
   }
 
   .header {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 0.6rem;
+  }
+
+  .header > div:first-child {
+    min-width: 0;
+  }
+
+  .header h1 {
+    margin: 0;
+    font-size: clamp(1.35rem, 5.8vw, 1.8rem);
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .status {
+    gap: 0.2rem;
+  }
+
+  .status-identity {
+    max-width: 46vw;
+  }
+
+  .status-name {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-connection {
+    white-space: nowrap;
   }
 
   .game-header {
@@ -1755,17 +1941,57 @@ label.row {
   }
 
   .practice-header {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 0.6rem;
+  }
+
+  .practice-header-summary {
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .practice-header-summary h2 {
+    font-size: clamp(1.05rem, 4.8vw, 1.3rem);
+    white-space: nowrap;
   }
 
   .practice-header-actions {
-    width: 100%;
-    flex-direction: column;
-    align-items: flex-start;
+    width: auto;
+    max-width: 58vw;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 0.45rem;
+    overflow-x: auto;
   }
 
   .practice-share-action {
+    width: auto;
+  }
+
+  .practice-header-actions > button,
+  .practice-header-actions .practice-share-action > button {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .practice-options {
+    max-height: min(46dvh, 360px);
+  }
+
+  .practice-puzzle-panel .button-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
+
+  .practice-puzzle-panel .button-row > button {
     width: 100%;
   }
 
