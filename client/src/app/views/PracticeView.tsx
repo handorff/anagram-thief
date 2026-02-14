@@ -10,6 +10,7 @@ import type {
   PracticeResult,
   PracticeScoredWord
 } from "@shared/types";
+import { useUserSettings } from "../../userSettings";
 import {
   formatPracticeOptionLabel,
   getPracticeOptionClassName
@@ -76,7 +77,9 @@ export function PracticeView({
   setShowAllPracticeOptions
 }: Props) {
   const [isShareChoiceOpen, setIsShareChoiceOpen] = useState(false);
+  const { isTileInputMethodEnabled } = useUserSettings();
   const isResultPhase = practiceState.phase === "result";
+  const isTileSelectionEnabled = isTileInputMethodEnabled && practiceState.phase === "puzzle";
 
   const canShareResult = Boolean(
     isResultPhase &&
@@ -84,6 +87,17 @@ export function PracticeView({
       !practiceResult.timedOut &&
       practiceResult.submittedWordNormalized
   );
+
+  const handlePracticeTileSelect = (letter: string) => {
+    if (!isTileSelectionEnabled) return;
+    const normalizedLetter = letter.trim().slice(0, 1).toUpperCase();
+    if (!normalizedLetter) return;
+    setPracticeWord((current) => `${current}${normalizedLetter}`);
+    if (practiceSubmitError) {
+      setPracticeSubmitError(null);
+    }
+    requestAnimationFrame(() => practiceInputRef.current?.focus());
+  };
 
   useEffect(() => {
     if (!practicePuzzle) {
@@ -156,7 +170,29 @@ export function PracticeView({
               </div>
               <div className="tiles">
                 {practicePuzzle.centerTiles.map((tile) => (
-                  <div key={tile.id} className="tile">
+                  <div
+                    key={tile.id}
+                    className={isTileSelectionEnabled ? "tile tile-selectable" : "tile"}
+                    role={isTileSelectionEnabled ? "button" : undefined}
+                    tabIndex={isTileSelectionEnabled ? 0 : undefined}
+                    onClick={
+                      isTileSelectionEnabled ? () => handlePracticeTileSelect(tile.letter) : undefined
+                    }
+                    onKeyDown={
+                      isTileSelectionEnabled
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              handlePracticeTileSelect(tile.letter);
+                            }
+                          }
+                        : undefined
+                    }
+                    aria-label={
+                      isTileSelectionEnabled ? `Use letter ${tile.letter.toUpperCase()} for practice word` : undefined
+                    }
+                  >
                     {tile.letter}
                   </div>
                 ))}
@@ -173,11 +209,44 @@ export function PracticeView({
                 {practicePuzzle.existingWords.map((word) => (
                   <div key={word.id} className="word-item">
                     <div className="word-tiles" aria-label={word.text}>
-                      {word.text.split("").map((letter, index) => (
-                        <div key={`${word.id}-${index}`} className="tile word-tile">
-                          {letter.toUpperCase()}
-                        </div>
-                      ))}
+                      {word.text.split("").map((letter, index) => {
+                        const upperLetter = letter.toUpperCase();
+                        return (
+                          <div
+                            key={`${word.id}-${index}`}
+                            className={
+                              isTileSelectionEnabled
+                                ? "tile word-tile tile-selectable"
+                                : "tile word-tile"
+                            }
+                            role={isTileSelectionEnabled ? "button" : undefined}
+                            tabIndex={isTileSelectionEnabled ? 0 : undefined}
+                            onClick={
+                              isTileSelectionEnabled
+                                ? () => handlePracticeTileSelect(upperLetter)
+                                : undefined
+                            }
+                            onKeyDown={
+                              isTileSelectionEnabled
+                                ? (event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      handlePracticeTileSelect(upperLetter);
+                                    }
+                                  }
+                                : undefined
+                            }
+                            aria-label={
+                              isTileSelectionEnabled
+                                ? `Use letter ${upperLetter} from existing word ${word.text}`
+                                : undefined
+                            }
+                          >
+                            {upperLetter}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
