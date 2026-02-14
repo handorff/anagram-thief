@@ -80,6 +80,8 @@ export function PracticeView({
   const { isTileInputMethodEnabled } = useUserSettings();
   const isResultPhase = practiceState.phase === "result";
   const isTileSelectionEnabled = isTileInputMethodEnabled && practiceState.phase === "puzzle";
+  const shouldShowPracticeUndoButton = isTileInputMethodEnabled && practiceState.phase === "puzzle";
+  const isPracticeUndoButtonDisabled = practiceWord.length === 0;
 
   const canShareResult = Boolean(
     isResultPhase &&
@@ -96,6 +98,12 @@ export function PracticeView({
     if (practiceSubmitError) {
       setPracticeSubmitError(null);
     }
+    requestAnimationFrame(() => practiceInputRef.current?.focus());
+  };
+
+  const handlePracticeUndoTap = () => {
+    if (!shouldShowPracticeUndoButton) return;
+    setPracticeWord((current) => current.slice(0, -1));
     requestAnimationFrame(() => practiceInputRef.current?.focus());
   };
 
@@ -294,6 +302,16 @@ export function PracticeView({
                         }}
                         placeholder="Enter your best play"
                       />
+                      {shouldShowPracticeUndoButton && (
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={handlePracticeUndoTap}
+                          disabled={isPracticeUndoButtonDisabled}
+                        >
+                          Undo
+                        </button>
+                      )}
                       <button onClick={onPracticeSubmit} disabled={!practiceWord.trim()}>
                         Submit
                       </button>

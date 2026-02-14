@@ -95,6 +95,7 @@ function renderPracticeView(options: {
 test("PracticeView renders selectable tiles in puzzle phase when tile input is enabled", () => {
   const html = renderPracticeView({ inputMethod: "tile" });
   assert.match(html, /tile-selectable/);
+  assert.match(html, />Undo</);
   assert.match(html, /Use letter A for practice word/);
   assert.match(html, /Use letter C from existing word cat/i);
 });
@@ -102,10 +103,12 @@ test("PracticeView renders selectable tiles in puzzle phase when tile input is e
 test("PracticeView renders non-selectable tiles in puzzle phase when tile input is disabled", () => {
   const html = renderPracticeView({ inputMethod: "typing" });
   assert.doesNotMatch(html, /tile-selectable/);
+  assert.doesNotMatch(html, />Undo</);
   assert.doesNotMatch(html, /Use letter [A-Z] for practice word/);
 });
 
 test("PracticeView does not render selectable tiles during result phase", () => {
   const html = renderPracticeView({ inputMethod: "tile", phase: "result" });
   assert.doesNotMatch(html, /tile-selectable/);
+  assert.doesNotMatch(html, />Undo</);
 });
