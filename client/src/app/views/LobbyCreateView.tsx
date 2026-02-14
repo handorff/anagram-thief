@@ -1,59 +1,46 @@
-import type { Dispatch, SetStateAction } from "react";
+type LobbyCreateModel = {
+  roomName: string;
+  isPublic: boolean;
+  maxPlayers: number;
+  flipTimerEnabled: boolean;
+  flipTimerSeconds: number;
+  claimTimerSeconds: number;
+  preStealEnabled: boolean;
+};
 
-type Props = {
-  createRoomName: string;
-  setCreateRoomName: Dispatch<SetStateAction<string>>;
-  createPublic: boolean;
-  setCreatePublic: Dispatch<SetStateAction<boolean>>;
-  createMaxPlayers: number;
-  setCreateMaxPlayers: Dispatch<SetStateAction<number>>;
-  createFlipTimerEnabled: boolean;
-  setCreateFlipTimerEnabled: Dispatch<SetStateAction<boolean>>;
-  createFlipTimerSeconds: number;
-  setCreateFlipTimerSeconds: Dispatch<SetStateAction<number>>;
-  createClaimTimerSeconds: number;
-  setCreateClaimTimerSeconds: Dispatch<SetStateAction<number>>;
-  createPreStealEnabled: boolean;
-  setCreatePreStealEnabled: Dispatch<SetStateAction<boolean>>;
+type LobbyCreateLimits = {
   minFlipTimerSeconds: number;
   maxFlipTimerSeconds: number;
   minClaimTimerSeconds: number;
   maxClaimTimerSeconds: number;
   clampFlipTimerSeconds: (value: number) => number;
   clampClaimTimerSeconds: (value: number) => number;
+};
+
+type LobbyCreateActions = {
+  onRoomNameChange: (value: string) => void;
+  onPublicChange: (value: boolean) => void;
+  onMaxPlayersChange: (value: number) => void;
+  onFlipTimerEnabledChange: (value: boolean) => void;
+  onFlipTimerSecondsChange: (value: number) => void;
+  onClaimTimerSecondsChange: (value: number) => void;
+  onPreStealEnabledChange: (value: boolean) => void;
   onBackToGames: () => void;
   onCreate: () => void;
 };
 
-export function LobbyCreateView({
-  createRoomName,
-  setCreateRoomName,
-  createPublic,
-  setCreatePublic,
-  createMaxPlayers,
-  setCreateMaxPlayers,
-  createFlipTimerEnabled,
-  setCreateFlipTimerEnabled,
-  createFlipTimerSeconds,
-  setCreateFlipTimerSeconds,
-  createClaimTimerSeconds,
-  setCreateClaimTimerSeconds,
-  createPreStealEnabled,
-  setCreatePreStealEnabled,
-  minFlipTimerSeconds,
-  maxFlipTimerSeconds,
-  minClaimTimerSeconds,
-  maxClaimTimerSeconds,
-  clampFlipTimerSeconds,
-  clampClaimTimerSeconds,
-  onBackToGames,
-  onCreate
-}: Props) {
-  const minFlipTimerSliderSeconds = Math.max(5, minFlipTimerSeconds);
-  const maxFlipTimerSliderSeconds = Math.min(60, maxFlipTimerSeconds);
+type Props = {
+  model: LobbyCreateModel;
+  limits: LobbyCreateLimits;
+  actions: LobbyCreateActions;
+};
+
+export function LobbyCreateView({ model, limits, actions }: Props) {
+  const minFlipTimerSliderSeconds = Math.max(5, limits.minFlipTimerSeconds);
+  const maxFlipTimerSliderSeconds = Math.min(60, limits.maxFlipTimerSeconds);
   const visibleFlipTimerSeconds = Math.min(
     maxFlipTimerSliderSeconds,
-    Math.max(minFlipTimerSliderSeconds, createFlipTimerSeconds)
+    Math.max(minFlipTimerSliderSeconds, model.flipTimerSeconds)
   );
 
   return (
@@ -64,8 +51,8 @@ export function LobbyCreateView({
         <label>
           Room name
           <input
-            value={createRoomName}
-            onChange={(e) => setCreateRoomName(e.target.value)}
+            value={model.roomName}
+            onChange={(event) => actions.onRoomNameChange(event.target.value)}
             placeholder="Friday Night"
           />
         </label>
@@ -73,19 +60,19 @@ export function LobbyCreateView({
           <span>Public room</span>
           <input
             type="checkbox"
-            checked={createPublic}
-            onChange={(e) => setCreatePublic(e.target.checked)}
+            checked={model.isPublic}
+            onChange={(event) => actions.onPublicChange(event.target.checked)}
           />
         </label>
         <label>
-          Max players ({createMaxPlayers})
+          Max players ({model.maxPlayers})
           <input
             type="range"
             min={2}
             max={8}
             step={1}
-            value={createMaxPlayers}
-            onChange={(e) => setCreateMaxPlayers(Number(e.target.value))}
+            value={model.maxPlayers}
+            onChange={(event) => actions.onMaxPlayersChange(Number(event.target.value))}
           />
         </label>
         <h3 className="form-section-label">Gameplay</h3>
@@ -93,30 +80,34 @@ export function LobbyCreateView({
           <span>Enable pre-steal</span>
           <input
             type="checkbox"
-            checked={createPreStealEnabled}
-            onChange={(event) => setCreatePreStealEnabled(event.target.checked)}
+            checked={model.preStealEnabled}
+            onChange={(event) => actions.onPreStealEnabledChange(event.target.checked)}
           />
         </label>
         <label>
-          Claim timer ({createClaimTimerSeconds}s)
+          Claim timer ({model.claimTimerSeconds}s)
           <input
             type="range"
-            min={minClaimTimerSeconds}
-            max={maxClaimTimerSeconds}
+            min={limits.minClaimTimerSeconds}
+            max={limits.maxClaimTimerSeconds}
             step={1}
-            value={createClaimTimerSeconds}
-            onChange={(e) => setCreateClaimTimerSeconds(clampClaimTimerSeconds(Number(e.target.value)))}
+            value={model.claimTimerSeconds}
+            onChange={(event) =>
+              actions.onClaimTimerSecondsChange(
+                limits.clampClaimTimerSeconds(Number(event.target.value))
+              )
+            }
           />
         </label>
         <label className="row">
           <span>Enable flip timer</span>
           <input
             type="checkbox"
-            checked={createFlipTimerEnabled}
-            onChange={(e) => setCreateFlipTimerEnabled(e.target.checked)}
+            checked={model.flipTimerEnabled}
+            onChange={(event) => actions.onFlipTimerEnabledChange(event.target.checked)}
           />
         </label>
-        {createFlipTimerEnabled && (
+        {model.flipTimerEnabled && (
           <label>
             Flip timer ({visibleFlipTimerSeconds}s)
             <input
@@ -125,15 +116,19 @@ export function LobbyCreateView({
               max={maxFlipTimerSliderSeconds}
               step={5}
               value={visibleFlipTimerSeconds}
-              onChange={(e) => setCreateFlipTimerSeconds(clampFlipTimerSeconds(Number(e.target.value)))}
+              onChange={(event) =>
+                actions.onFlipTimerSecondsChange(
+                  limits.clampFlipTimerSeconds(Number(event.target.value))
+                )
+              }
             />
           </label>
         )}
         <div className="button-row">
-          <button className="button-secondary" onClick={onBackToGames}>
+          <button className="button-secondary" onClick={actions.onBackToGames}>
             Back to games
           </button>
-          <button onClick={onCreate}>Create game</button>
+          <button onClick={actions.onCreate}>Create game</button>
         </div>
       </section>
     </div>

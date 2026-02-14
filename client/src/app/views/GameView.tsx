@@ -1,12 +1,8 @@
 import {
   useMemo,
   useState,
-  type KeyboardEvent
-} from "react";
-import type {
-  Dispatch,
-  RefObject,
-  SetStateAction
+  type KeyboardEvent,
+  type RefObject
 } from "react";
 import type {
   GameState,
@@ -25,106 +21,74 @@ type SpectatorPreStealPlayer = {
   preStealEntries: GameState["players"][number]["preStealEntries"];
 };
 
-type Props = {
+type GameViewModel = {
   roomState: RoomState;
   gameState: GameState;
   selfPlayerId: string | null;
   isSpectator: boolean;
   endTimerRemaining: number | null;
   formatTime: (seconds: number) => string;
-  onFlip: () => void;
   isFlipRevealActive: boolean;
   isTileSelectionEnabled: boolean;
-  onClaimTileSelect: (letter: string) => void;
   pendingFlip: GameState["pendingFlip"];
   flipRevealDurationMs: number;
   flipRevealElapsedMs: number;
   flipRevealPlayerName: string;
   claimWindow: GameState["claimWindow"];
   claimProgress: number;
-  claimInputRef: RefObject<HTMLInputElement>;
   claimWord: string;
-  setClaimWord: Dispatch<SetStateAction<string>>;
   isMyClaimWindow: boolean;
-  onClaimSubmit: () => void;
-  onClaimIntent: () => void;
   claimPlaceholder: string;
   isClaimInputDisabled: boolean;
   isClaimButtonDisabled: boolean;
   claimButtonLabel: string;
   shouldShowClaimUndoButton: boolean;
   isClaimUndoButtonDisabled: boolean;
-  onClaimUndoTap: () => void;
   orderedGamePlayers: Player[];
   claimedWordHighlights: Record<string, WordHighlightKind>;
-  setShowLeaveGameConfirm: Dispatch<SetStateAction<boolean>>;
   spectatorPreStealPlayers: SpectatorPreStealPlayer[];
   preStealTriggerInput: string;
-  setPreStealTriggerInput: Dispatch<SetStateAction<string>>;
   preStealClaimWordInput: string;
-  setPreStealClaimWordInput: Dispatch<SetStateAction<string>>;
-  onAddPreStealEntry: () => void;
   myPreStealEntries: GameState["players"][number]["preStealEntries"];
-  setPreStealDraggedEntryId: Dispatch<SetStateAction<string | null>>;
   preStealDraggedEntryId: string | null;
+};
+
+type GameViewActions = {
+  onFlip: () => void;
+  onClaimTileSelect: (letter: string) => void;
+  onClaimSubmit: () => void;
+  onClaimIntent: () => void;
+  onClaimWordChange: (value: string) => void;
+  onClaimUndoTap: () => void;
+  onOpenLeaveGameConfirm: () => void;
+  onPreStealTriggerInputChange: (value: string) => void;
+  onPreStealClaimWordInputChange: (value: string) => void;
+  onAddPreStealEntry: () => void;
+  onPreStealDraggedEntryIdChange: (entryId: string | null) => void;
   onPreStealEntryDrop: (targetEntryId: string) => void;
   onRemovePreStealEntry: (entryId: string) => void;
 };
 
-export function GameView({
-  roomState,
-  gameState,
-  selfPlayerId,
-  isSpectator,
-  endTimerRemaining,
-  formatTime,
-  onFlip,
-  isFlipRevealActive,
-  isTileSelectionEnabled,
-  onClaimTileSelect,
-  pendingFlip,
-  flipRevealDurationMs,
-  flipRevealElapsedMs,
-  flipRevealPlayerName,
-  claimWindow,
-  claimProgress,
-  claimInputRef,
-  claimWord,
-  setClaimWord,
-  isMyClaimWindow,
-  onClaimSubmit,
-  onClaimIntent,
-  claimPlaceholder,
-  isClaimInputDisabled,
-  isClaimButtonDisabled,
-  claimButtonLabel,
-  shouldShowClaimUndoButton,
-  isClaimUndoButtonDisabled,
-  onClaimUndoTap,
-  orderedGamePlayers,
-  claimedWordHighlights,
-  setShowLeaveGameConfirm,
-  spectatorPreStealPlayers,
-  preStealTriggerInput,
-  setPreStealTriggerInput,
-  preStealClaimWordInput,
-  setPreStealClaimWordInput,
-  onAddPreStealEntry,
-  myPreStealEntries,
-  setPreStealDraggedEntryId,
-  preStealDraggedEntryId,
-  onPreStealEntryDrop,
-  onRemovePreStealEntry
-}: Props) {
+type GameViewRefs = {
+  claimInputRef: RefObject<HTMLInputElement>;
+};
+
+type Props = {
+  model: GameViewModel;
+  actions: GameViewActions;
+  refs: GameViewRefs;
+};
+
+export function GameView({ model, actions, refs }: Props) {
   const [isRemainingTilesModalOpen, setIsRemainingTilesModalOpen] = useState(false);
 
   const remainingBagLetterCounts = useMemo(
     () =>
       BAG_LETTERS.map((letter) => ({
         letter,
-        count: gameState.bagLetterCounts?.[letter] ?? 0
+        count: model.gameState.bagLetterCounts?.[letter] ?? 0
       })),
-    [gameState.bagLetterCounts]
+    [model.gameState.bagLetterCounts]
   );
 
   const handleBagCountKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -147,70 +111,75 @@ export function GameView({
               onKeyDown={handleBagCountKeyDown}
               aria-label="Show remaining tiles in bag"
             >
-              Bag: {gameState.bagCount} tiles
+              Bag: {model.gameState.bagCount} tiles
             </div>
-            {roomState?.flipTimer.enabled && (
-              <p className="muted">Auto flip: {roomState.flipTimer.seconds}s</p>
+            {model.roomState?.flipTimer.enabled && (
+              <p className="muted">Auto flip: {model.roomState.flipTimer.seconds}s</p>
             )}
           </div>
           <div className="turn">
             <span>Turn:</span>
             <strong>
-              {gameState.players.find((p) => p.id === gameState.turnPlayerId)?.name || "Unknown"}
+              {model.gameState.players.find((player) => player.id === model.gameState.turnPlayerId)?.name || "Unknown"}
             </strong>
             <button
-              onClick={onFlip}
-              disabled={isSpectator || gameState.turnPlayerId !== selfPlayerId || isFlipRevealActive || !!claimWindow}
+              onClick={actions.onFlip}
+              disabled={
+                model.isSpectator ||
+                model.gameState.turnPlayerId !== model.selfPlayerId ||
+                model.isFlipRevealActive ||
+                !!model.claimWindow
+              }
             >
               Flip Tile
             </button>
           </div>
         </div>
 
-        {endTimerRemaining !== null && (
-          <div className="timer">End in {formatTime(endTimerRemaining)}</div>
+        {model.endTimerRemaining !== null && (
+          <div className="timer">End in {model.formatTime(model.endTimerRemaining)}</div>
         )}
 
         <div className="tiles">
-          {gameState.centerTiles.length === 0 && !pendingFlip && (
+          {model.gameState.centerTiles.length === 0 && !model.pendingFlip && (
             <div className="muted">No tiles flipped yet.</div>
           )}
-          {gameState.centerTiles.map((tile) => (
+          {model.gameState.centerTiles.map((tile) => (
             <div
               key={tile.id}
-              className={isTileSelectionEnabled ? "tile tile-selectable" : "tile"}
-              role={isTileSelectionEnabled ? "button" : undefined}
-              tabIndex={isTileSelectionEnabled ? 0 : undefined}
+              className={model.isTileSelectionEnabled ? "tile tile-selectable" : "tile"}
+              role={model.isTileSelectionEnabled ? "button" : undefined}
+              tabIndex={model.isTileSelectionEnabled ? 0 : undefined}
               onClick={
-                isTileSelectionEnabled ? () => onClaimTileSelect(tile.letter) : undefined
+                model.isTileSelectionEnabled ? () => actions.onClaimTileSelect(tile.letter) : undefined
               }
               onKeyDown={
-                isTileSelectionEnabled
+                model.isTileSelectionEnabled
                   ? (event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
                         event.stopPropagation();
-                        onClaimTileSelect(tile.letter);
+                        actions.onClaimTileSelect(tile.letter);
                       }
                     }
                   : undefined
               }
               aria-label={
-                isTileSelectionEnabled ? `Use letter ${tile.letter} for claim` : undefined
+                model.isTileSelectionEnabled ? `Use letter ${tile.letter} for claim` : undefined
               }
             >
               {tile.letter}
             </div>
           ))}
-          {pendingFlip && (
+          {model.pendingFlip && (
             <div
               className="tile tile-reveal-card"
               style={{
-                animationDuration: `${flipRevealDurationMs}ms`,
-                animationDelay: `-${flipRevealElapsedMs}ms`
+                animationDuration: `${model.flipRevealDurationMs}ms`,
+                animationDelay: `-${model.flipRevealElapsedMs}ms`
               }}
               aria-live="polite"
-              aria-label={`${flipRevealPlayerName} is revealing the next tile`}
+              aria-label={`${model.flipRevealPlayerName} is revealing the next tile`}
             >
               ?
             </div>
@@ -219,65 +188,65 @@ export function GameView({
 
         <div className="claim-box">
           <div
-            className={`claim-timer ${claimWindow ? "" : "placeholder"}`}
-            role={claimWindow ? "progressbar" : undefined}
-            aria-label={claimWindow ? "Claim timer" : undefined}
-            aria-valuemin={claimWindow ? 0 : undefined}
-            aria-valuemax={claimWindow ? 100 : undefined}
-            aria-valuenow={claimWindow ? Math.round(claimProgress * 100) : undefined}
-            aria-hidden={!claimWindow}
+            className={`claim-timer ${model.claimWindow ? "" : "placeholder"}`}
+            role={model.claimWindow ? "progressbar" : undefined}
+            aria-label={model.claimWindow ? "Claim timer" : undefined}
+            aria-valuemin={model.claimWindow ? 0 : undefined}
+            aria-valuemax={model.claimWindow ? 100 : undefined}
+            aria-valuenow={model.claimWindow ? Math.round(model.claimProgress * 100) : undefined}
+            aria-hidden={!model.claimWindow}
           >
             <div
               className="claim-progress"
-              style={{ width: `${claimWindow ? claimProgress * 100 : 0}%` }}
+              style={{ width: `${model.claimWindow ? model.claimProgress * 100 : 0}%` }}
             />
           </div>
           <div className="claim-input">
             <input
-              ref={claimInputRef}
-              value={claimWord}
-              onChange={(e) => setClaimWord(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  if (isMyClaimWindow) {
-                    onClaimSubmit();
+              ref={refs.claimInputRef}
+              value={model.claimWord}
+              onChange={(event) => actions.onClaimWordChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  if (model.isMyClaimWindow) {
+                    actions.onClaimSubmit();
                     return;
                   }
-                  onClaimIntent();
+                  actions.onClaimIntent();
                 }
               }}
-              placeholder={claimPlaceholder}
-              disabled={isClaimInputDisabled}
+              placeholder={model.claimPlaceholder}
+              disabled={model.isClaimInputDisabled}
             />
-            {shouldShowClaimUndoButton && (
+            {model.shouldShowClaimUndoButton && (
               <button
                 type="button"
                 className="button-secondary"
-                onClick={onClaimUndoTap}
-                disabled={isClaimUndoButtonDisabled}
+                onClick={actions.onClaimUndoTap}
+                disabled={model.isClaimUndoButtonDisabled}
               >
                 Undo
               </button>
             )}
             <button
               type="button"
-              onClick={isMyClaimWindow ? onClaimSubmit : onClaimIntent}
-              disabled={isClaimButtonDisabled}
+              onClick={model.isMyClaimWindow ? actions.onClaimSubmit : actions.onClaimIntent}
+              disabled={model.isClaimButtonDisabled}
             >
-              {claimButtonLabel}
+              {model.claimButtonLabel}
             </button>
           </div>
         </div>
 
         <div className="words board-words">
-          {gameState.players.map((player) => (
+          {model.gameState.players.map((player) => (
             <WordList
               key={player.id}
               player={player}
-              isSelf={player.id === selfPlayerId}
-              highlightedWordIds={claimedWordHighlights}
-              onTileLetterSelect={onClaimTileSelect}
+              isSelf={player.id === model.selfPlayerId}
+              highlightedWordIds={model.claimedWordHighlights}
+              onTileLetterSelect={actions.onClaimTileSelect}
             />
           ))}
         </div>
@@ -286,16 +255,16 @@ export function GameView({
       <section className="panel scoreboard">
         <div className="scoreboard-header">
           <h2>Players</h2>
-          <button className="button-danger" onClick={() => setShowLeaveGameConfirm(true)}>
-            {isSpectator ? "Leave Spectate" : "Leave Game"}
+          <button className="button-danger" onClick={actions.onOpenLeaveGameConfirm}>
+            {model.isSpectator ? "Leave Spectate" : "Leave Game"}
           </button>
         </div>
         <div className="player-list">
-          {orderedGamePlayers.map((player) => (
-            <div key={player.id} className={player.id === selfPlayerId ? "player you" : "player"}>
+          {model.orderedGamePlayers.map((player) => (
+            <div key={player.id} className={player.id === model.selfPlayerId ? "player you" : "player"}>
               <div>
                 <strong>{player.name}</strong>
-                {player.id === gameState.turnPlayerId && <span className="badge">turn</span>}
+                {player.id === model.gameState.turnPlayerId && <span className="badge">turn</span>}
                 {!player.connected && <span className="badge">offline</span>}
               </div>
               <span className="score">{player.score}</span>
@@ -303,14 +272,14 @@ export function GameView({
           ))}
         </div>
 
-        {gameState.preStealEnabled && (
+        {model.gameState.preStealEnabled && (
           <div className="pre-steal-panel">
-            {isSpectator ? (
+            {model.isSpectator ? (
               <div className="pre-steal-entries-column">
                 <div className="word-header">
                   <span>Pre-steal entries</span>
                 </div>
-                {spectatorPreStealPlayers.map((player) => (
+                {model.spectatorPreStealPlayers.map((player) => (
                   <div key={player.id} className="word-list">
                     <div className="word-header">
                       <span>{player.name}</span>
@@ -339,43 +308,43 @@ export function GameView({
                 <div className="pre-steal-entry-form">
                   <input
                     className="pre-steal-trigger-input"
-                    value={preStealTriggerInput}
-                    onChange={(event) => setPreStealTriggerInput(event.target.value)}
+                    value={model.preStealTriggerInput}
+                    onChange={(event) => actions.onPreStealTriggerInputChange(event.target.value)}
                     placeholder="Trigger letters"
                   />
                   <input
                     className="pre-steal-claim-input"
-                    value={preStealClaimWordInput}
-                    onChange={(event) => setPreStealClaimWordInput(event.target.value)}
+                    value={model.preStealClaimWordInput}
+                    onChange={(event) => actions.onPreStealClaimWordInputChange(event.target.value)}
                     placeholder="Claim word"
                   />
                   <button
                     className="button-secondary"
-                    onClick={onAddPreStealEntry}
-                    disabled={!preStealTriggerInput.trim() || !preStealClaimWordInput.trim()}
+                    onClick={actions.onAddPreStealEntry}
+                    disabled={!model.preStealTriggerInput.trim() || !model.preStealClaimWordInput.trim()}
                   >
                     Add
                   </button>
                 </div>
 
-                {myPreStealEntries.map((entry) => (
+                {model.myPreStealEntries.map((entry) => (
                   <div
                     key={entry.id}
                     className="pre-steal-entry self"
                     draggable
                     onDragStart={(event) => {
-                      setPreStealDraggedEntryId(entry.id);
+                      actions.onPreStealDraggedEntryIdChange(entry.id);
                       event.dataTransfer.setData("text/plain", entry.id);
                     }}
-                    onDragEnd={() => setPreStealDraggedEntryId(null)}
+                    onDragEnd={() => actions.onPreStealDraggedEntryIdChange(null)}
                     onDragOver={(event) => {
-                      if (!preStealDraggedEntryId) return;
+                      if (!model.preStealDraggedEntryId) return;
                       event.preventDefault();
                       event.dataTransfer.dropEffect = "move";
                     }}
                     onDrop={(event) => {
                       event.preventDefault();
-                      onPreStealEntryDrop(entry.id);
+                      actions.onPreStealEntryDrop(entry.id);
                     }}
                   >
                     <span className="pre-steal-entry-text">
@@ -383,7 +352,7 @@ export function GameView({
                       {" -> "}
                       {entry.claimWord}
                     </span>
-                    <button className="button-secondary" onClick={() => onRemovePreStealEntry(entry.id)}>
+                    <button className="button-secondary" onClick={() => actions.onRemovePreStealEntry(entry.id)}>
                       Remove
                     </button>
                   </div>
