@@ -116,6 +116,8 @@ import {
   getWordSnapshots,
   reorderEntriesById
 } from "./app/game/gameUtils";
+import { deriveGameplaySounds } from "./app/audio/deriveGameplaySounds";
+import { GameplaySoundEngine } from "./app/audio/soundEngine";
 import type {
   ClaimFailureContext,
   EditorPuzzleDraft,
@@ -243,6 +245,7 @@ export default function App() {
     phase: "puzzle"
   });
   const previousRoomIdRef = useRef<string | null>(null);
+  const gameplaySoundEngineRef = useRef<GameplaySoundEngine | null>(null);
   const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
   const practiceShareStatusTimeoutRef = useRef<number | null>(null);
   const practiceResultShareStatusTimeoutRef = useRef<number | null>(null);
@@ -298,6 +301,18 @@ export default function App() {
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const soundEngine = new GameplaySoundEngine();
+    gameplaySoundEngineRef.current = soundEngine;
+
+    return () => {
+      soundEngine.dispose();
+      if (gameplaySoundEngineRef.current === soundEngine) {
+        gameplaySoundEngineRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -2100,6 +2115,7 @@ export default function App() {
     }
 
     const previousState = previousGameStateRef.current;
+    const transitionNow = Date.now();
     const pendingEntries: PendingGameLogEntry[] = [];
 
     if (!previousState) {
@@ -2195,7 +2211,7 @@ export default function App() {
     let isClaimWindowExpired = false;
     if (previousClaimWindow && !gameState.claimWindow) {
       isClaimWindowExpired =
-        previousClaimWindow.endsAt <= Date.now() &&
+        previousClaimWindow.endsAt <= transitionNow &&
         previousClaimWindow.playerId in currentCooldowns;
     }
     if (isClaimWindowExpired && previousClaimWindow) {
@@ -2205,7 +2221,7 @@ export default function App() {
 
     for (const playerId of startedCooldownPlayerIds) {
       if (playerId === selfPlayerId && lastClaimFailureRef.current) {
-        const elapsed = Date.now() - lastClaimFailureRef.current.at;
+        const elapsed = transitionNow - lastClaimFailureRef.current.at;
         if (elapsed <= CLAIM_FAILURE_WINDOW_MS) {
           pendingEntries.push({
             text: `You failed claim: ${lastClaimFailureRef.current.message} You are on cooldown.`,
@@ -2236,14 +2252,35 @@ export default function App() {
       pendingEntries.push({ text: "Game ended.", kind: "event" });
     }
 
+    if (!isReplayMode) {
+      const soundEngine = gameplaySoundEngineRef.current;
+      if (soundEngine) {
+        const soundIds = deriveGameplaySounds({
+          previousState,
+          nextState: gameState,
+          selfPlayerId,
+          now: transitionNow
+        });
+        for (const soundId of soundIds) {
+          soundEngine.play(soundId, {
+            enabled: userSettings.soundEnabled,
+            volume: userSettings.soundVolume
+          });
+        }
+      }
+    }
+
     previousGameStateRef.current = gameState;
     appendGameLogEntries(pendingEntries);
   }, [
     appendGameLogEntries,
     gameState,
+    isReplayMode,
     markClaimedWordForAnimation,
     roomState,
-    selfPlayerId
+    selfPlayerId,
+    userSettings.soundEnabled,
+    userSettings.soundVolume
   ]);
 
   const replayBackButtonLabel = roomState?.status === "ended" ? "Back to final scores" : "Close replay";

@@ -1623,6 +1623,22 @@ label.row {
   display: block;
 }
 
+.settings-sound-volume {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.2rem 0;
+}
+
+.settings-sound-volume > span {
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+}
+
+.settings-sound-volume input[type="range"] {
+  width: 100%;
+}
+
 .leave-confirm-modal {
   border-color: var(--color-danger-border);
 }

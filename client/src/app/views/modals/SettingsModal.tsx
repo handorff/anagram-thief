@@ -95,6 +95,41 @@ export function SettingsModal({
             </span>
           </label>
         </div>
+        <div className="settings-section">
+          <span>Sound</span>
+          <label className="settings-option">
+            <input
+              type="checkbox"
+              checked={userSettingsDraft.soundEnabled}
+              onChange={(event) =>
+                setUserSettingsDraft((current) => ({
+                  ...current,
+                  soundEnabled: event.target.checked
+                }))
+              }
+            />
+            <span>
+              <strong>Enable gameplay sound effects</strong>
+            </span>
+          </label>
+          <label className="settings-sound-volume">
+            <span>Volume: {Math.round(userSettingsDraft.soundVolume * 100)}%</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(userSettingsDraft.soundVolume * 100)}
+              disabled={!userSettingsDraft.soundEnabled}
+              onChange={(event) =>
+                setUserSettingsDraft((current) => ({
+                  ...current,
+                  soundVolume: Math.max(0, Math.min(1, Number(event.target.value) / 100))
+                }))
+              }
+            />
+          </label>
+        </div>
         <div className="button-row">
           <button className="button-secondary" onClick={onClose}>
             Cancel

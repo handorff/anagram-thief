@@ -11,13 +11,17 @@ export type UserSettings = {
   theme: ThemeSetting;
   bottomPanelMode: BottomPanelModeSetting;
   chatEnabled: boolean;
+  soundEnabled: boolean;
+  soundVolume: number;
 };
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   inputMethod: "typing",
   theme: "light",
   bottomPanelMode: "log",
-  chatEnabled: true
+  chatEnabled: true,
+  soundEnabled: true,
+  soundVolume: 0.7
 };
 
 function normalizeInputMethodSetting(value: unknown): InputMethodSetting {
@@ -37,7 +41,19 @@ function normalizeChatEnabledSetting(value: unknown): boolean {
   return true;
 }
 
-function normalizeUserSettings(value: unknown): UserSettings {
+function normalizeSoundEnabledSetting(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  return true;
+}
+
+function normalizeSoundVolumeSetting(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_USER_SETTINGS.soundVolume;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+export function normalizeUserSettings(value: unknown): UserSettings {
   if (!value || typeof value !== "object") {
     return DEFAULT_USER_SETTINGS;
   }
@@ -48,7 +64,9 @@ function normalizeUserSettings(value: unknown): UserSettings {
     inputMethod: normalizeInputMethodSetting(candidate.inputMethod),
     theme: normalizeThemeSetting(candidate.theme),
     bottomPanelMode: chatEnabled ? normalizeBottomPanelModeSetting(candidate.bottomPanelMode) : "log",
-    chatEnabled
+    chatEnabled,
+    soundEnabled: normalizeSoundEnabledSetting(candidate.soundEnabled),
+    soundVolume: normalizeSoundVolumeSetting(candidate.soundVolume)
   };
 }
 
