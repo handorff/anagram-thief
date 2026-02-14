@@ -1,26 +1,23 @@
-import type {
-  Dispatch,
-  SetStateAction
-} from "react";
 import type { UserSettings } from "../../../userSettings";
 
-type Props = {
+type SettingsModalModel = {
   editNameDraft: string;
-  setEditNameDraft: Dispatch<SetStateAction<string>>;
   userSettingsDraft: UserSettings;
-  setUserSettingsDraft: Dispatch<SetStateAction<UserSettings>>;
+};
+
+type SettingsModalActions = {
+  onEditNameDraftChange: (value: string) => void;
+  onUserSettingsDraftChange: (updater: (current: UserSettings) => UserSettings) => void;
   onClose: () => void;
   onSave: () => void;
 };
 
-export function SettingsModal({
-  editNameDraft,
-  setEditNameDraft,
-  userSettingsDraft,
-  setUserSettingsDraft,
-  onClose,
-  onSave
-}: Props) {
+type Props = {
+  model: SettingsModalModel;
+  actions: SettingsModalActions;
+};
+
+export function SettingsModal({ model, actions }: Props) {
   return (
     <div className="join-overlay">
       <div className="panel join-modal settings-modal" role="dialog" aria-modal="true">
@@ -28,12 +25,12 @@ export function SettingsModal({
         <label>
           Display name
           <input
-            value={editNameDraft}
-            onChange={(event) => setEditNameDraft(event.target.value)}
+            value={model.editNameDraft}
+            onChange={(event) => actions.onEditNameDraftChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                onSave();
+                actions.onSave();
               }
             }}
             placeholder="Player name"
@@ -45,9 +42,9 @@ export function SettingsModal({
           <label className="settings-option">
             <input
               type="checkbox"
-              checked={userSettingsDraft.inputMethod === "tile"}
+              checked={model.userSettingsDraft.inputMethod === "tile"}
               onChange={(event) =>
-                setUserSettingsDraft((current) => ({
+                actions.onUserSettingsDraftChange((current) => ({
                   ...current,
                   inputMethod: event.target.checked ? "tile" : "typing"
                 }))
@@ -63,9 +60,9 @@ export function SettingsModal({
           <label className="settings-option">
             <input
               type="checkbox"
-              checked={userSettingsDraft.theme === "dark"}
+              checked={model.userSettingsDraft.theme === "dark"}
               onChange={(event) =>
-                setUserSettingsDraft((current) => ({
+                actions.onUserSettingsDraftChange((current) => ({
                   ...current,
                   theme: event.target.checked ? "dark" : "light"
                 }))
@@ -81,9 +78,9 @@ export function SettingsModal({
           <label className="settings-option">
             <input
               type="checkbox"
-              checked={userSettingsDraft.chatEnabled}
+              checked={model.userSettingsDraft.chatEnabled}
               onChange={(event) =>
-                setUserSettingsDraft((current) => ({
+                actions.onUserSettingsDraftChange((current) => ({
                   ...current,
                   chatEnabled: event.target.checked,
                   bottomPanelMode: event.target.checked ? current.bottomPanelMode : "log"
@@ -96,10 +93,10 @@ export function SettingsModal({
           </label>
         </div>
         <div className="button-row">
-          <button className="button-secondary" onClick={onClose}>
+          <button className="button-secondary" onClick={actions.onClose}>
             Cancel
           </button>
-          <button onClick={onSave} disabled={!editNameDraft.trim()}>
+          <button onClick={actions.onSave} disabled={!model.editNameDraft.trim()}>
             Save settings
           </button>
         </div>

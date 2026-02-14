@@ -1,55 +1,43 @@
-import type {
-  Dispatch,
-  SetStateAction
-} from "react";
 import type { PracticeDifficulty } from "@shared/types";
 
-type Props = {
-  editorDifficulty: PracticeDifficulty;
-  setEditorDifficulty: Dispatch<SetStateAction<PracticeDifficulty>>;
-  editorCenterInput: string;
-  setEditorCenterInput: Dispatch<SetStateAction<string>>;
-  editorExistingWordsInput: string;
-  setEditorExistingWordsInput: Dispatch<SetStateAction<string>>;
-  editorPuzzleDraft: {
+type PracticeEditorModel = {
+  difficulty: PracticeDifficulty;
+  centerInput: string;
+  existingWordsInput: string;
+  puzzleDraft: {
     normalizedCenter: string;
     normalizedExistingWords: string[];
   };
-  editorTotalCharacters: number;
+  totalCharacters: number;
+  validationMessage: string | null;
+  lobbyError: string | null;
+  isPuzzleReady: boolean;
+  isShareValidationInFlight: boolean;
+  shareStatus: "copied" | "failed" | null;
+};
+
+type PracticeEditorLimits = {
   customPuzzleCenterLetterMax: number;
   customPuzzleExistingWordCountMax: number;
   customPuzzleTotalCharactersMax: number;
-  editorValidationMessage: string | null;
-  lobbyError: string | null;
-  isEditorPuzzleReady: boolean;
-  isEditorShareValidationInFlight: boolean;
-  editorShareStatus: "copied" | "failed" | null;
+};
+
+type PracticeEditorActions = {
+  onDifficultyChange: (difficulty: PracticeDifficulty) => void;
+  onCenterInputChange: (value: string) => void;
+  onExistingWordsInputChange: (value: string) => void;
   onBackToLobby: () => void;
   onPlayPuzzle: () => void;
   onSharePuzzle: () => void;
 };
 
-export function PracticeEditorView({
-  editorDifficulty,
-  setEditorDifficulty,
-  editorCenterInput,
-  setEditorCenterInput,
-  editorExistingWordsInput,
-  setEditorExistingWordsInput,
-  editorPuzzleDraft,
-  editorTotalCharacters,
-  customPuzzleCenterLetterMax,
-  customPuzzleExistingWordCountMax,
-  customPuzzleTotalCharactersMax,
-  editorValidationMessage,
-  lobbyError,
-  isEditorPuzzleReady,
-  isEditorShareValidationInFlight,
-  editorShareStatus,
-  onBackToLobby,
-  onPlayPuzzle,
-  onSharePuzzle
-}: Props) {
+type Props = {
+  model: PracticeEditorModel;
+  limits: PracticeEditorLimits;
+  actions: PracticeEditorActions;
+};
+
+export function PracticeEditorView({ model, limits, actions }: Props) {
   return (
     <div className="grid">
       <section className="panel panel-narrow practice-editor">
@@ -67,10 +55,10 @@ export function PracticeEditorView({
                   key={level}
                   type="button"
                   className={
-                    editorDifficulty === level ? "practice-difficulty-option active" : "practice-difficulty-option"
+                    model.difficulty === level ? "practice-difficulty-option active" : "practice-difficulty-option"
                   }
-                  onClick={() => setEditorDifficulty(level as PracticeDifficulty)}
-                  aria-pressed={editorDifficulty === level}
+                  onClick={() => actions.onDifficultyChange(level as PracticeDifficulty)}
+                  aria-pressed={model.difficulty === level}
                 >
                   {level}
                 </button>
@@ -81,8 +69,8 @@ export function PracticeEditorView({
           <label>
             Center tiles (A-Z)
             <input
-              value={editorCenterInput}
-              onChange={(event) => setEditorCenterInput(event.target.value)}
+              value={model.centerInput}
+              onChange={(event) => actions.onCenterInputChange(event.target.value)}
               placeholder="TEAM"
             />
           </label>
@@ -90,44 +78,44 @@ export function PracticeEditorView({
           <label>
             Existing words (one per line)
             <textarea
-              value={editorExistingWordsInput}
-              onChange={(event) => setEditorExistingWordsInput(event.target.value)}
+              value={model.existingWordsInput}
+              onChange={(event) => actions.onExistingWordsInputChange(event.target.value)}
               placeholder={"RATE\nALERT"}
               rows={6}
             />
           </label>
 
           <p className="muted practice-editor-stats">
-            Center: {editorPuzzleDraft.normalizedCenter.length}/{customPuzzleCenterLetterMax} letters ·
-            Existing words: {editorPuzzleDraft.normalizedExistingWords.length}/
-            {customPuzzleExistingWordCountMax} · Total chars: {editorTotalCharacters}/
-            {customPuzzleTotalCharactersMax}
+            Center: {model.puzzleDraft.normalizedCenter.length}/{limits.customPuzzleCenterLetterMax} letters ·
+            Existing words: {model.puzzleDraft.normalizedExistingWords.length}/
+            {limits.customPuzzleExistingWordCountMax} · Total chars: {model.totalCharacters}/
+            {limits.customPuzzleTotalCharactersMax}
           </p>
 
-          {(editorValidationMessage || lobbyError) && (
+          {(model.validationMessage || model.lobbyError) && (
             <div className="practice-editor-error" role="alert">
-              {editorValidationMessage ?? lobbyError}
+              {model.validationMessage ?? model.lobbyError}
             </div>
           )}
         </div>
 
         <div className="button-row">
-          <button className="button-secondary" onClick={onBackToLobby}>
+          <button className="button-secondary" onClick={actions.onBackToLobby}>
             Back to lobby
           </button>
-          <button onClick={onPlayPuzzle} disabled={!isEditorPuzzleReady}>
+          <button onClick={actions.onPlayPuzzle} disabled={!model.isPuzzleReady}>
             Play puzzle
           </button>
           <button
             className="button-secondary"
-            onClick={onSharePuzzle}
-            disabled={!isEditorPuzzleReady || isEditorShareValidationInFlight}
+            onClick={actions.onSharePuzzle}
+            disabled={!model.isPuzzleReady || model.isShareValidationInFlight}
           >
-            {isEditorShareValidationInFlight
+            {model.isShareValidationInFlight
               ? "Validating..."
-              : editorShareStatus === "copied"
+              : model.shareStatus === "copied"
                 ? "Copied!"
-                : editorShareStatus === "failed"
+                : model.shareStatus === "failed"
                   ? "Copy failed"
                   : "Share link"}
           </button>

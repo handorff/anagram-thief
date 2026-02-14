@@ -1,9 +1,7 @@
 import {
   useEffect,
   useState,
-  type Dispatch,
-  type RefObject,
-  type SetStateAction
+  type RefObject
 } from "react";
 import type {
   PracticeModeState,
@@ -20,76 +18,62 @@ type PracticeResultCategory = {
   label: string;
 };
 
-type Props = {
+type PracticeViewModel = {
   practiceState: PracticeModeState;
   practicePuzzle: PracticeModeState["puzzle"];
   practiceResult: PracticeResult | null;
   practiceShareStatus: "copied" | "failed" | null;
   practiceResultShareStatus: "copied" | "failed" | null;
+  practiceTimerRemainingSeconds: number | null;
+  isPracticeTimerWarning: boolean;
+  practiceTimerProgress: number;
+  practiceWord: string;
+  practiceSubmitError: string | null;
+  practiceResultCategory: PracticeResultCategory | null;
+  visiblePracticeOptions: PracticeScoredWord[];
+  hiddenPracticeOptionCount: number;
+  showAllPracticeOptions: boolean;
+};
+
+type PracticeViewActions = {
   onSharePracticePuzzle: () => void;
   onSharePracticeResult: () => void;
   onOpenPracticeDifficultyPicker: () => void;
   onPracticeNext: () => void;
   onPracticeExit: () => void;
-  practiceTimerRemainingSeconds: number | null;
-  isPracticeTimerWarning: boolean;
-  practiceTimerProgress: number;
-  practiceWord: string;
-  setPracticeWord: Dispatch<SetStateAction<string>>;
-  practiceSubmitError: string | null;
-  setPracticeSubmitError: Dispatch<SetStateAction<string | null>>;
+  onPracticeWordChange: (value: string) => void;
+  onPracticeSubmitErrorChange: (value: string | null) => void;
   onPracticeSubmit: () => void;
   onPracticeSkip: () => void;
-  practiceInputRef: RefObject<HTMLInputElement>;
-  practiceResultCategory: PracticeResultCategory | null;
-  visiblePracticeOptions: PracticeScoredWord[];
-  hiddenPracticeOptionCount: number;
-  showAllPracticeOptions: boolean;
-  setShowAllPracticeOptions: Dispatch<SetStateAction<boolean>>;
+  onShowAllPracticeOptionsChange: (value: boolean) => void;
 };
 
-export function PracticeView({
-  practiceState,
-  practicePuzzle,
-  practiceResult,
-  practiceShareStatus,
-  practiceResultShareStatus,
-  onSharePracticePuzzle,
-  onSharePracticeResult,
-  onOpenPracticeDifficultyPicker,
-  onPracticeNext,
-  onPracticeExit,
-  practiceTimerRemainingSeconds,
-  isPracticeTimerWarning,
-  practiceTimerProgress,
-  practiceWord,
-  setPracticeWord,
-  practiceSubmitError,
-  setPracticeSubmitError,
-  onPracticeSubmit,
-  onPracticeSkip,
-  practiceInputRef,
-  practiceResultCategory,
-  visiblePracticeOptions,
-  hiddenPracticeOptionCount,
-  showAllPracticeOptions,
-  setShowAllPracticeOptions
-}: Props) {
+type PracticeViewRefs = {
+  practiceInputRef: RefObject<HTMLInputElement>;
+};
+
+type Props = {
+  model: PracticeViewModel;
+  actions: PracticeViewActions;
+  refs: PracticeViewRefs;
+};
+
+export function PracticeView({ model, actions, refs }: Props) {
   const [isShareChoiceOpen, setIsShareChoiceOpen] = useState(false);
-  const isResultPhase = practiceState.phase === "result";
+  const isResultPhase = model.practiceState.phase === "result";
 
   const canShareResult = Boolean(
     isResultPhase &&
-      practiceResult &&
-      !practiceResult.timedOut &&
-      practiceResult.submittedWordNormalized
+      model.practiceResult &&
+      !model.practiceResult.timedOut &&
+      model.practiceResult.submittedWordNormalized
   );
 
   useEffect(() => {
-    if (!practicePuzzle) {
+    if (!model.practicePuzzle) {
       setIsShareChoiceOpen(false);
     }
-  }, [practicePuzzle]);
+  }, [model.practicePuzzle]);
 
   useEffect(() => {
     if (!isResultPhase) {
@@ -105,7 +89,7 @@ export function PracticeView({
             <h2>Practice Mode</h2>
           </div>
           <div className="practice-header-actions">
-            {practicePuzzle && (
+            {model.practicePuzzle && (
               <div className="practice-share-action">
                 <button
                   className="icon-button practice-share-icon-button"
@@ -115,15 +99,15 @@ export function PracticeView({
                       setIsShareChoiceOpen(true);
                       return;
                     }
-                    onSharePracticePuzzle();
+                    actions.onSharePracticePuzzle();
                   }}
                   aria-label={isResultPhase ? "Share options" : "Share puzzle"}
                   title={isResultPhase ? "Share options" : "Share puzzle"}
                 >
                   <span aria-hidden="true">
-                    {!isResultPhase && practiceShareStatus === "copied"
+                    {!isResultPhase && model.practiceShareStatus === "copied"
                       ? "✓"
-                      : !isResultPhase && practiceShareStatus === "failed"
+                      : !isResultPhase && model.practiceShareStatus === "failed"
                         ? "!"
                         : "↗"}
                   </span>
@@ -133,7 +117,7 @@ export function PracticeView({
             <button
               className="icon-button practice-exit-icon-button"
               type="button"
-              onClick={onPracticeExit}
+              onClick={actions.onPracticeExit}
               aria-label="Exit practice"
               title="Exit practice"
             >
@@ -142,10 +126,10 @@ export function PracticeView({
           </div>
         </div>
 
-        {practicePuzzle ? (
+        {model.practicePuzzle ? (
           <div
             className={
-              practiceState.phase === "result" && practiceResult
+              model.practiceState.phase === "result" && model.practiceResult
                 ? "practice-content result-layout"
                 : "practice-content"
             }
@@ -155,7 +139,7 @@ export function PracticeView({
                 <h3>Center Tiles</h3>
               </div>
               <div className="tiles">
-                {practicePuzzle.centerTiles.map((tile) => (
+                {model.practicePuzzle.centerTiles.map((tile) => (
                   <div key={tile.id} className="tile">
                     {tile.letter}
                   </div>
@@ -165,12 +149,12 @@ export function PracticeView({
               <div className="word-list practice-existing-words">
                 <div className="word-header">
                   <span>Existing words</span>
-                  <span className="muted">{practicePuzzle.existingWords.length}</span>
+                  <span className="muted">{model.practicePuzzle.existingWords.length}</span>
                 </div>
-                {practicePuzzle.existingWords.length === 0 && (
+                {model.practicePuzzle.existingWords.length === 0 && (
                   <div className="muted">No existing words in this puzzle.</div>
                 )}
-                {practicePuzzle.existingWords.map((word) => (
+                {model.practicePuzzle.existingWords.map((word) => (
                   <div key={word.id} className="word-item">
                     <div className="word-tiles" aria-label={word.text}>
                       {word.text.split("").map((letter, index) => (
@@ -183,25 +167,25 @@ export function PracticeView({
                 ))}
               </div>
 
-              {practiceState.phase === "puzzle" && (
+              {model.practiceState.phase === "puzzle" && (
                 <>
-                  {practiceTimerRemainingSeconds !== null && (
+                  {model.practiceTimerRemainingSeconds !== null && (
                     <div
-                      className={`practice-puzzle-timer ${isPracticeTimerWarning ? "warning" : ""}`}
+                      className={`practice-puzzle-timer ${model.isPracticeTimerWarning ? "warning" : ""}`}
                       role="progressbar"
                       aria-label="Practice puzzle timer"
                       aria-valuemin={0}
-                      aria-valuemax={practiceState.timerSeconds}
-                      aria-valuenow={practiceTimerRemainingSeconds}
+                      aria-valuemax={model.practiceState.timerSeconds}
+                      aria-valuenow={model.practiceTimerRemainingSeconds}
                     >
                       <div className="practice-puzzle-timer-header">
                         <span>Time remaining</span>
-                        <strong>{practiceTimerRemainingSeconds}s</strong>
+                        <strong>{model.practiceTimerRemainingSeconds}s</strong>
                       </div>
                       <div className="practice-puzzle-timer-track">
                         <div
                           className="practice-puzzle-timer-progress"
-                          style={{ width: `${practiceTimerProgress * 100}%` }}
+                          style={{ width: `${model.practiceTimerProgress * 100}%` }}
                         />
                       </div>
                     </div>
@@ -209,37 +193,37 @@ export function PracticeView({
                   <div className="claim-box">
                     <div className="claim-input">
                       <input
-                        ref={practiceInputRef}
-                        value={practiceWord}
+                        ref={refs.practiceInputRef}
+                        value={model.practiceWord}
                         onChange={(event) => {
-                          setPracticeWord(event.target.value);
-                          if (practiceSubmitError) {
-                            setPracticeSubmitError(null);
+                          actions.onPracticeWordChange(event.target.value);
+                          if (model.practiceSubmitError) {
+                            actions.onPracticeSubmitErrorChange(null);
                           }
                         }}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                             event.preventDefault();
-                            onPracticeSubmit();
+                            actions.onPracticeSubmit();
                           }
                         }}
                         placeholder="Enter your best play"
                       />
-                      <button onClick={onPracticeSubmit} disabled={!practiceWord.trim()}>
+                      <button onClick={actions.onPracticeSubmit} disabled={!model.practiceWord.trim()}>
                         Submit
                       </button>
                     </div>
-                    {practiceSubmitError && (
+                    {model.practiceSubmitError && (
                       <div className="practice-submit-error" role="alert">
-                        {practiceSubmitError}
+                        {model.practiceSubmitError}
                       </div>
                     )}
                   </div>
                   <div className="button-row">
-                    <button className="button-secondary" onClick={onOpenPracticeDifficultyPicker}>
+                    <button className="button-secondary" onClick={actions.onOpenPracticeDifficultyPicker}>
                       Change Difficulty
                     </button>
-                    <button className="button-secondary" onClick={onPracticeSkip}>
+                    <button className="button-secondary" onClick={actions.onPracticeSkip}>
                       Skip Puzzle
                     </button>
                   </div>
@@ -247,38 +231,41 @@ export function PracticeView({
               )}
             </div>
 
-            {practiceState.phase === "result" && practiceResult && (
+            {model.practiceState.phase === "result" && model.practiceResult && (
               <div className="practice-result-panel">
-                <button className="practice-next-puzzle-button" onClick={onPracticeNext}>
+                <button className="practice-next-puzzle-button" onClick={actions.onPracticeNext}>
                   Next Puzzle
                 </button>
                 <div className="practice-result">
                   <div className="practice-result-summary">
                     <div className="practice-result-summary-header">
                       <h3>Result</h3>
-                      {practiceResultCategory && (
+                      {model.practiceResultCategory && (
                         <span
-                          className={`practice-result-badge practice-result-badge-${practiceResultCategory.key}`}
+                          className={`practice-result-badge practice-result-badge-${model.practiceResultCategory.key}`}
                         >
-                          {practiceResultCategory.label}
+                          {model.practiceResultCategory.label}
                         </span>
                       )}
                     </div>
                     <p>
                       <strong>
-                        {practiceResult.timedOut
+                        {model.practiceResult.timedOut
                           ? "Time's up"
-                          : practiceResult.submittedWordNormalized || "(empty)"}
+                          : model.practiceResult.submittedWordNormalized || "(empty)"}
                       </strong>{" "}
-                      ({practiceResult.score}/{practiceResult.bestScore})
+                      ({model.practiceResult.score}/{model.practiceResult.bestScore})
                     </p>
                   </div>
 
                   <div className="practice-options">
-                    {visiblePracticeOptions.map((option) => (
+                    {model.visiblePracticeOptions.map((option) => (
                       <div
                         key={`${option.word}-${option.source}-${option.stolenFrom ?? "center"}`}
-                        className={getPracticeOptionClassName(option, practiceResult.submittedWordNormalized)}
+                        className={getPracticeOptionClassName(
+                          option,
+                          model.practiceResult?.submittedWordNormalized
+                        )}
                       >
                         <div>
                           <strong>{formatPracticeOptionLabel(option)}</strong>
@@ -286,11 +273,11 @@ export function PracticeView({
                         <span className="score">{option.score}</span>
                       </div>
                     ))}
-                    {hiddenPracticeOptionCount > 0 && !showAllPracticeOptions && (
+                    {model.hiddenPracticeOptionCount > 0 && !model.showAllPracticeOptions && (
                       <button
                         type="button"
                         className="practice-option-more"
-                        onClick={() => setShowAllPracticeOptions(true)}
+                        onClick={() => actions.onShowAllPracticeOptionsChange(true)}
                       >
                         more
                       </button>
@@ -325,12 +312,12 @@ export function PracticeView({
                 type="button"
                 onClick={() => {
                   setIsShareChoiceOpen(false);
-                  onSharePracticePuzzle();
+                  actions.onSharePracticePuzzle();
                 }}
               >
-                {practiceShareStatus === "copied"
+                {model.practiceShareStatus === "copied"
                   ? "Puzzle copied!"
-                  : practiceShareStatus === "failed"
+                  : model.practiceShareStatus === "failed"
                     ? "Puzzle copy failed"
                     : "Share puzzle"}
               </button>
@@ -341,12 +328,12 @@ export function PracticeView({
                 onClick={() => {
                   if (!canShareResult) return;
                   setIsShareChoiceOpen(false);
-                  onSharePracticeResult();
+                  actions.onSharePracticeResult();
                 }}
               >
-                {practiceResultShareStatus === "copied"
+                {model.practiceResultShareStatus === "copied"
                   ? "Result copied!"
-                  : practiceResultShareStatus === "failed"
+                  : model.practiceResultShareStatus === "failed"
                     ? "Result copy failed"
                     : "Share result"}
               </button>

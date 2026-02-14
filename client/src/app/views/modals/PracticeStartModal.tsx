@@ -1,42 +1,39 @@
-import type {
-  Dispatch,
-  SetStateAction
-} from "react";
 import type { PracticeDifficulty } from "@shared/types";
 
-type Props = {
+type PracticeStartModalModel = {
   title?: string;
   confirmLabel?: string;
   showTimerSettings?: boolean;
-  practiceStartDifficulty: PracticeDifficulty | null;
-  setPracticeStartDifficulty: Dispatch<SetStateAction<PracticeDifficulty | null>>;
-  practiceStartTimerEnabled: boolean;
-  setPracticeStartTimerEnabled: Dispatch<SetStateAction<boolean>>;
-  practiceStartTimerSeconds: number;
-  setPracticeStartTimerSeconds: Dispatch<SetStateAction<number>>;
+  difficulty: PracticeDifficulty | null;
+  timerEnabled: boolean;
+  timerSeconds: number;
+};
+
+type PracticeStartModalLimits = {
   minPracticeTimerSeconds: number;
   maxPracticeTimerSeconds: number;
   clampPracticeTimerSeconds: (value: number) => number;
+};
+
+type PracticeStartModalActions = {
+  onDifficultyChange: (difficulty: PracticeDifficulty) => void;
+  onTimerEnabledChange: (enabled: boolean) => void;
+  onTimerSecondsChange: (seconds: number | ((current: number) => number)) => void;
   onCancel: () => void;
   onConfirm: () => void;
 };
 
-export function PracticeStartModal({
-  title = "Start Practice Mode",
-  confirmLabel = "Start practice",
-  showTimerSettings = true,
-  practiceStartDifficulty,
-  setPracticeStartDifficulty,
-  practiceStartTimerEnabled,
-  setPracticeStartTimerEnabled,
-  practiceStartTimerSeconds,
-  setPracticeStartTimerSeconds,
-  minPracticeTimerSeconds,
-  maxPracticeTimerSeconds,
-  clampPracticeTimerSeconds,
-  onCancel,
-  onConfirm
-}: Props) {
+type Props = {
+  model: PracticeStartModalModel;
+  limits: PracticeStartModalLimits;
+  actions: PracticeStartModalActions;
+};
+
+export function PracticeStartModal({ model, limits, actions }: Props) {
+  const title = model.title ?? "Start Practice Mode";
+  const confirmLabel = model.confirmLabel ?? "Start practice";
+  const showTimerSettings = model.showTimerSettings ?? true;
+
   return (
     <div className="join-overlay practice-start-overlay">
       <div className="panel join-modal practice-start-modal">
@@ -50,12 +47,12 @@ export function PracticeStartModal({
                   key={level}
                   type="button"
                   className={
-                    practiceStartDifficulty === level
+                    model.difficulty === level
                       ? "practice-difficulty-option active"
                       : "practice-difficulty-option"
                   }
-                  onClick={() => setPracticeStartDifficulty(level as PracticeDifficulty)}
-                  aria-pressed={practiceStartDifficulty === level}
+                  onClick={() => actions.onDifficultyChange(level as PracticeDifficulty)}
+                  aria-pressed={model.difficulty === level}
                 >
                   {level}
                 </button>
@@ -68,37 +65,37 @@ export function PracticeStartModal({
             <label className="practice-start-timer-toggle">
               <input
                 type="checkbox"
-                checked={practiceStartTimerEnabled}
-                onChange={(event) => setPracticeStartTimerEnabled(event.target.checked)}
+                checked={model.timerEnabled}
+                onChange={(event) => actions.onTimerEnabledChange(event.target.checked)}
               />
               <span>Enable puzzle timer</span>
             </label>
-            {practiceStartTimerEnabled ? (
+            {model.timerEnabled ? (
               <label className="practice-start-timer-seconds">
                 <span>
-                  Timer seconds ({minPracticeTimerSeconds}-{maxPracticeTimerSeconds})
+                  Timer seconds ({limits.minPracticeTimerSeconds}-{limits.maxPracticeTimerSeconds})
                 </span>
                 <div className="practice-start-timer-input-row">
                   <input
                     type="range"
-                    min={minPracticeTimerSeconds}
-                    max={maxPracticeTimerSeconds}
+                    min={limits.minPracticeTimerSeconds}
+                    max={limits.maxPracticeTimerSeconds}
                     step={1}
-                    value={practiceStartTimerSeconds}
+                    value={model.timerSeconds}
                     onChange={(event) =>
-                      setPracticeStartTimerSeconds(clampPracticeTimerSeconds(Number(event.target.value)))
+                      actions.onTimerSecondsChange(limits.clampPracticeTimerSeconds(Number(event.target.value)))
                     }
                   />
                   <input
                     type="number"
-                    min={minPracticeTimerSeconds}
-                    max={maxPracticeTimerSeconds}
-                    value={practiceStartTimerSeconds}
+                    min={limits.minPracticeTimerSeconds}
+                    max={limits.maxPracticeTimerSeconds}
+                    value={model.timerSeconds}
                     onChange={(event) =>
-                      setPracticeStartTimerSeconds(clampPracticeTimerSeconds(Number(event.target.value)))
+                      actions.onTimerSecondsChange(limits.clampPracticeTimerSeconds(Number(event.target.value)))
                     }
                     onBlur={() =>
-                      setPracticeStartTimerSeconds((current) => clampPracticeTimerSeconds(current))
+                      actions.onTimerSecondsChange((current) => limits.clampPracticeTimerSeconds(current))
                     }
                   />
                 </div>
@@ -107,10 +104,10 @@ export function PracticeStartModal({
           </>
         ) : null}
         <div className="button-row">
-          <button className="button-secondary" onClick={onCancel}>
+          <button className="button-secondary" onClick={actions.onCancel}>
             Cancel
           </button>
-          <button onClick={onConfirm} disabled={practiceStartDifficulty === null}>
+          <button onClick={actions.onConfirm} disabled={model.difficulty === null}>
             {confirmLabel}
           </button>
         </div>
