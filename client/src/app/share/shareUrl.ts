@@ -6,6 +6,7 @@ import type {
 import { decodePracticeSharePayload } from "@shared/practiceShare";
 import { decodePracticeResultSharePayload } from "@shared/practiceResultShare";
 import {
+  PRACTICE_CHALLENGE_QUERY_PARAM,
   PRACTICE_RESULT_SHARE_QUERY_PARAM,
   PRACTICE_SHARE_QUERY_PARAM,
   PRIVATE_ROOM_CODE_QUERY_PARAM,
@@ -38,6 +39,20 @@ function parseResultSharePayloadFromUrl(token: string): PracticeResultSharePaylo
 export function readPendingSharedLaunchFromUrl(): PendingSharedLaunch | null {
   if (typeof window === "undefined") return null;
   const params = new URLSearchParams(window.location.search);
+  const challengeToken = params.get(PRACTICE_CHALLENGE_QUERY_PARAM);
+  if (challengeToken) {
+    const parsed = parseResultSharePayloadFromUrl(challengeToken);
+    if (parsed) {
+      return {
+        kind: "challenge",
+        payload: parsed.p,
+        submittedWord: parsed.a,
+        sharerName: parsed.n,
+        expectedPuzzleFingerprint: buildPracticePuzzleFingerprint(parsed.p)
+      };
+    }
+  }
+
   const resultToken = params.get(PRACTICE_RESULT_SHARE_QUERY_PARAM);
   if (resultToken) {
     const parsed = parseResultSharePayloadFromUrl(resultToken);
@@ -74,9 +89,16 @@ export function readPendingPrivateRoomJoinFromUrl(): PendingPrivateRoomJoin | nu
 export function removePracticeShareFromUrl() {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
-  if (!params.has(PRACTICE_SHARE_QUERY_PARAM) && !params.has(PRACTICE_RESULT_SHARE_QUERY_PARAM)) return;
+  if (
+    !params.has(PRACTICE_SHARE_QUERY_PARAM) &&
+    !params.has(PRACTICE_RESULT_SHARE_QUERY_PARAM) &&
+    !params.has(PRACTICE_CHALLENGE_QUERY_PARAM)
+  ) {
+    return;
+  }
   params.delete(PRACTICE_SHARE_QUERY_PARAM);
   params.delete(PRACTICE_RESULT_SHARE_QUERY_PARAM);
+  params.delete(PRACTICE_CHALLENGE_QUERY_PARAM);
   const search = params.toString();
   const nextUrl = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
   window.history.replaceState(window.history.state, "", nextUrl);

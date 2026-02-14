@@ -19,6 +19,15 @@ import {
   MIN_PRACTICE_TIMER_SECONDS
 } from "../constants";
 
+export type PracticeChallengeComparison = {
+  sharerLabel: string;
+  sharerWord: string;
+  sharerScore: number;
+  recipientWord: string;
+  recipientScore: number;
+  scoreDelta: number;
+};
+
 export function normalizeEditorText(value: string): string {
   return value.trim().toUpperCase();
 }
@@ -93,6 +102,39 @@ export function getPracticeResultCategory(result: PracticeResult): {
     return { key: "good", label: "Good" };
   }
   return { key: "ok", label: "OK" };
+}
+
+export function getPracticeScoreForWord(result: PracticeResult, word: string): number {
+  const normalizedWord = normalizeEditorText(word);
+  if (!normalizedWord) return 0;
+
+  const matchingOption = result.allOptions.find((option) => normalizeEditorText(option.word) === normalizedWord);
+  if (matchingOption) return matchingOption.score;
+  if (normalizeEditorText(result.submittedWordNormalized) === normalizedWord) {
+    return result.score;
+  }
+  return 0;
+}
+
+export function buildPracticeChallengeComparison(
+  result: PracticeResult,
+  sharerWord: string,
+  sharerName?: string
+): PracticeChallengeComparison {
+  const normalizedSharerWord = normalizeEditorText(sharerWord);
+  const normalizedRecipientWord = normalizeEditorText(result.submittedWordNormalized);
+  const resolvedSharerLabel = typeof sharerName === "string" && sharerName.trim() ? sharerName.trim() : "Challenger";
+
+  const sharerScore = getPracticeScoreForWord(result, normalizedSharerWord);
+  const recipientScore = result.score;
+  return {
+    sharerLabel: resolvedSharerLabel,
+    sharerWord: normalizedSharerWord,
+    sharerScore,
+    recipientWord: normalizedRecipientWord,
+    recipientScore,
+    scoreDelta: recipientScore - sharerScore
+  };
 }
 
 export function buildPracticeSharePayloadFromReplayState(state: ReplayStateSnapshot) {

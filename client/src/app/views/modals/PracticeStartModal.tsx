@@ -22,8 +22,8 @@ type Props = {
 };
 
 export function PracticeStartModal({
-  title = "Start Practice Mode",
-  confirmLabel = "Start practice",
+  title = "Start Puzzle Mode",
+  confirmLabel = "Start puzzle mode",
   showTimerSettings = true,
   practiceStartDifficulty,
   setPracticeStartDifficulty,
@@ -43,7 +43,7 @@ export function PracticeStartModal({
         <h2>{title}</h2>
         <div className="practice-start-difficulty-group">
           <p className="practice-start-difficulty-label">Difficulty</p>
-          <div className="practice-start-difficulty-picker" role="group" aria-label="Practice difficulty">
+          <div className="practice-start-difficulty-picker" role="group" aria-label="Puzzle mode difficulty">
             <div className="practice-difficulty-segmented">
               {[1, 2, 3, 4, 5].map((level) => (
                 <button

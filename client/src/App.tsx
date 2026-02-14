@@ -66,6 +66,7 @@ import {
   MIN_FLIP_TIMER_SECONDS,
   MIN_PRACTICE_TIMER_SECONDS,
   PENDING_RESULT_AUTO_SUBMIT_TTL_MS,
+  PRACTICE_CHALLENGE_QUERY_PARAM,
   PRACTICE_RESULT_SHARE_QUERY_PARAM,
   PRACTICE_SHARE_QUERY_PARAM,
   PRACTICE_TIMER_WARNING_SECONDS,
@@ -92,6 +93,7 @@ import {
   removePrivateRoomJoinFromUrl
 } from "./app/share/shareUrl";
 import {
+  buildPracticeChallengeComparison,
   buildPracticeSharePayloadFromReplayState,
   clampClaimTimerSeconds,
   clampFlipTimerSeconds,
@@ -215,6 +217,14 @@ export default function App() {
   const [practiceSubmitError, setPracticeSubmitError] = useState<string | null>(null);
   const [practiceShareStatus, setPracticeShareStatus] = useState<"copied" | "failed" | null>(null);
   const [practiceResultShareStatus, setPracticeResultShareStatus] = useState<"copied" | "failed" | null>(null);
+  const [practiceChallengeShareStatus, setPracticeChallengeShareStatus] = useState<"copied" | "failed" | null>(
+    null
+  );
+  const [activePracticeChallenge, setActivePracticeChallenge] = useState<{
+    submittedWord: string;
+    sharerName?: string;
+    expectedPuzzleFingerprint: string;
+  } | null>(null);
   const [showAllPracticeOptions, setShowAllPracticeOptions] = useState(false);
   const claimInputRef = useRef<HTMLInputElement>(null);
   const practiceInputRef = useRef<HTMLInputElement>(null);
@@ -236,6 +246,7 @@ export default function App() {
   const claimAnimationTimeoutsRef = useRef<Map<string, number>>(new Map());
   const practiceShareStatusTimeoutRef = useRef<number | null>(null);
   const practiceResultShareStatusTimeoutRef = useRef<number | null>(null);
+  const practiceChallengeShareStatusTimeoutRef = useRef<number | null>(null);
   const editorShareStatusTimeoutRef = useRef<number | null>(null);
   const privateInviteCopyStatusTimeoutRef = useRef<number | null>(null);
 
@@ -305,6 +316,10 @@ export default function App() {
       if (practiceResultShareStatusTimeoutRef.current !== null) {
         window.clearTimeout(practiceResultShareStatusTimeoutRef.current);
         practiceResultShareStatusTimeoutRef.current = null;
+      }
+      if (practiceChallengeShareStatusTimeoutRef.current !== null) {
+        window.clearTimeout(practiceChallengeShareStatusTimeoutRef.current);
+        practiceChallengeShareStatusTimeoutRef.current = null;
       }
       if (editorShareStatusTimeoutRef.current !== null) {
         window.clearTimeout(editorShareStatusTimeoutRef.current);
@@ -722,6 +737,22 @@ export default function App() {
   const isInPractice = !roomState && practiceState.active;
   const practicePuzzle = practiceState.puzzle;
   const practiceResult = practiceState.result;
+  const practiceChallengeComparison = useMemo(() => {
+    if (!activePracticeChallenge || !practiceResult) return null;
+    if (!practiceState.active || practiceState.phase !== "result") return null;
+
+    return buildPracticeChallengeComparison(
+      practiceResult,
+      activePracticeChallenge.submittedWord,
+      activePracticeChallenge.sharerName
+    );
+  }, [
+    activePracticeChallenge,
+    practiceResult,
+    practiceState.active,
+    practiceState.phase,
+    practiceState.puzzle
+  ]);
   const practiceTimerRemainingMs = useMemo(() => {
     if (!practiceState.active) return null;
     if (practiceState.phase !== "puzzle") return null;
@@ -901,6 +932,17 @@ export default function App() {
     practiceResultShareStatusTimeoutRef.current = window.setTimeout(() => {
       setPracticeResultShareStatus(null);
       practiceResultShareStatusTimeoutRef.current = null;
+    }, 2_500);
+  }, []);
+
+  const showPracticeChallengeShareStatus = useCallback((status: "copied" | "failed") => {
+    setPracticeChallengeShareStatus(status);
+    if (practiceChallengeShareStatusTimeoutRef.current !== null) {
+      window.clearTimeout(practiceChallengeShareStatusTimeoutRef.current);
+    }
+    practiceChallengeShareStatusTimeoutRef.current = window.setTimeout(() => {
+      setPracticeChallengeShareStatus(null);
+      practiceChallengeShareStatusTimeoutRef.current = null;
     }, 2_500);
   }, []);
 
@@ -1111,6 +1153,7 @@ export default function App() {
     socket.emit("practice:skip");
     setPracticeWord("");
     setPracticeSubmitError(null);
+    setActivePracticeChallenge(null);
   };
 
   const handlePracticeNext = () => {
@@ -1118,6 +1161,7 @@ export default function App() {
     socket.emit("practice:next");
     setPracticeWord("");
     setPracticeSubmitError(null);
+    setActivePracticeChallenge(null);
   };
 
   const handlePracticeExit = () => {
@@ -1125,6 +1169,7 @@ export default function App() {
     setPracticeWord("");
     setPracticeSubmitError(null);
     setPendingResultAutoSubmit(null);
+    setActivePracticeChallenge(null);
   };
 
   const handleSharePracticePuzzle = async () => {
@@ -1161,6 +1206,27 @@ export default function App() {
       showPracticeResultShareStatus("copied");
     } catch {
       showPracticeResultShareStatus("failed");
+    }
+  };
+
+  const handleSharePracticeChallenge = async () => {
+    if (!practicePuzzle || !practiceResult || practiceState.phase !== "result") return;
+    if (practiceResult.timedOut || !practiceResult.submittedWordNormalized) return;
+
+    try {
+      const payload = buildPracticeResultSharePayload(
+        practiceState.currentDifficulty,
+        practicePuzzle,
+        practiceResult.submittedWordNormalized,
+        playerName
+      );
+      const token = encodePracticeResultSharePayload(payload);
+      const shareUrl = new URL(window.location.href);
+      shareUrl.searchParams.set(PRACTICE_CHALLENGE_QUERY_PARAM, token);
+      await navigator.clipboard.writeText(shareUrl.toString());
+      showPracticeChallengeShareStatus("copied");
+    } catch {
+      showPracticeChallengeShareStatus("failed");
     }
   };
 
@@ -1704,6 +1770,10 @@ export default function App() {
   }, [practiceState.puzzle?.id, practiceResult?.submittedWordNormalized]);
 
   useEffect(() => {
+    setPracticeChallengeShareStatus(null);
+  }, [practiceState.puzzle?.id]);
+
+  useEffect(() => {
     setEditorValidationMessageFromServer(null);
     setEditorShareStatus(null);
   }, [editorCenterInput, editorExistingWordsInput, editorDifficulty]);
@@ -1720,8 +1790,17 @@ export default function App() {
         expectedPuzzleFingerprint: pendingSharedLaunch.expectedPuzzleFingerprint,
         expiresAt: Date.now() + PENDING_RESULT_AUTO_SUBMIT_TTL_MS
       });
+      setActivePracticeChallenge(null);
+    } else if (pendingSharedLaunch.kind === "challenge") {
+      setPendingResultAutoSubmit(null);
+      setActivePracticeChallenge({
+        submittedWord: pendingSharedLaunch.submittedWord,
+        sharerName: pendingSharedLaunch.sharerName,
+        expectedPuzzleFingerprint: pendingSharedLaunch.expectedPuzzleFingerprint
+      });
     } else {
       setPendingResultAutoSubmit(null);
+      setActivePracticeChallenge(null);
     }
     socket.emit("practice:start", {
       sharedPuzzle: pendingSharedLaunch.payload,
@@ -1790,6 +1869,7 @@ export default function App() {
       removePrivateRoomJoinFromUrl();
       setLobbyError(null);
       setPendingResultAutoSubmit(null);
+      setActivePracticeChallenge(null);
       setReplaySource((current) => (current?.kind === "imported" ? null : current));
       setImportReplayError(null);
       return;
@@ -2325,8 +2405,11 @@ export default function App() {
           practiceResult={practiceResult}
           practiceShareStatus={practiceShareStatus}
           practiceResultShareStatus={practiceResultShareStatus}
+          practiceChallengeShareStatus={practiceChallengeShareStatus}
+          practiceChallengeComparison={practiceChallengeComparison}
           onSharePracticePuzzle={handleSharePracticePuzzle}
           onSharePracticeResult={handleSharePracticeResult}
+          onSharePracticeChallenge={handleSharePracticeChallenge}
           onOpenPracticeDifficultyPicker={handleOpenPracticeDifficultyPicker}
           onPracticeNext={handlePracticeNext}
           onPracticeExit={handlePracticeExit}
@@ -2543,8 +2626,8 @@ export default function App() {
 
       {showPracticeStartPrompt && !roomState && (
         <PracticeStartModal
-          title={practiceStartPromptMode === "difficulty" ? "Change Difficulty" : "Start Practice Mode"}
-          confirmLabel={practiceStartPromptMode === "difficulty" ? "Apply difficulty" : "Start practice"}
+          title={practiceStartPromptMode === "difficulty" ? "Change Difficulty" : "Start Puzzle Mode"}
+          confirmLabel={practiceStartPromptMode === "difficulty" ? "Apply difficulty" : "Start puzzle mode"}
           showTimerSettings={practiceStartPromptMode !== "difficulty"}
           practiceStartDifficulty={practiceStartDifficulty}
           setPracticeStartDifficulty={setPracticeStartDifficulty}

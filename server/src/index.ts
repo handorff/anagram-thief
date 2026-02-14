@@ -2179,7 +2179,7 @@ io.on("connection", (socket) => {
       return;
     }
     if (getSocketData(socket).roomId) {
-      emitError(socket, "Leave your room before entering practice mode.");
+      emitError(socket, "Leave your room before entering puzzle mode.");
       return;
     }
 
@@ -2392,7 +2392,7 @@ io.on("connection", (socket) => {
 
     const practiceState = practiceBySessionId.get(currentSession.sessionId);
     if (!practiceState || !practiceState.active) {
-      emitError(socket, "Start practice mode first.");
+      emitError(socket, "Start puzzle mode first.");
       return;
     }
 
@@ -2448,7 +2448,7 @@ io.on("connection", (socket) => {
       return;
     }
     if (!advancePracticePuzzle(currentSession.sessionId)) {
-      emitError(socket, "Start practice mode first.");
+      emitError(socket, "Start puzzle mode first.");
       return;
     }
     emitPracticeState(socket, currentSession.sessionId);
@@ -2461,7 +2461,7 @@ io.on("connection", (socket) => {
       return;
     }
     if (!advancePracticePuzzle(currentSession.sessionId)) {
-      emitError(socket, "Start practice mode first.");
+      emitError(socket, "Start puzzle mode first.");
       return;
     }
     emitPracticeState(socket, currentSession.sessionId);
@@ -2549,7 +2549,7 @@ io.on("connection", (socket) => {
         return;
       }
       if (getPracticeStateForSession(currentSession.sessionId).active) {
-        emitError(socket, "Exit practice mode before creating a room.");
+        emitError(socket, "Exit puzzle mode before creating a room.");
         return;
       }
 
@@ -2629,7 +2629,7 @@ io.on("connection", (socket) => {
       return;
     }
     if (getPracticeStateForSession(currentSession.sessionId).active) {
-      emitError(socket, "Exit practice mode before joining a room.");
+      emitError(socket, "Exit puzzle mode before joining a room.");
       return;
     }
 
@@ -2720,7 +2720,7 @@ io.on("connection", (socket) => {
       return;
     }
     if (getPracticeStateForSession(currentSession.sessionId).active) {
-      emitError(socket, "Exit practice mode before spectating.");
+      emitError(socket, "Exit puzzle mode before spectating.");
       return;
     }
 

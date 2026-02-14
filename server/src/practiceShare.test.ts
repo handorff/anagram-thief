@@ -69,8 +69,32 @@ test("result share payload round-trip encodes and decodes puzzle and answer", ()
   });
 
   const token = encodePracticeResultSharePayload(payload);
+  const tokenParts = token.split(".");
+  assert.equal(tokenParts.length, 4);
+  assert.equal(tokenParts[2]?.startsWith("~"), true);
   const decoded = decodePracticeResultSharePayload(token);
   assert.deepEqual(decoded, payload);
+});
+
+test("result share payload decode supports legacy plain answer tokens", () => {
+  const puzzleToken = encodePracticeSharePayload({
+    v: 2,
+    d: 3,
+    c: "TEAM",
+    w: ["RATE"]
+  });
+  const legacyToken = `1.${puzzleToken}.TEAMS`;
+  const decoded = decodePracticeResultSharePayload(legacyToken);
+  assert.deepEqual(decoded, {
+    v: 1,
+    p: {
+      v: 2,
+      d: 3,
+      c: "TEAM",
+      w: ["RATE"]
+    },
+    a: "TEAMS"
+  });
 });
 
 test("result share payload decode returns null for malformed tokens", () => {

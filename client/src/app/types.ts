@@ -10,6 +10,13 @@ export type PendingSharedLaunch =
       payload: PracticeSharePayload;
     }
   | {
+      kind: "challenge";
+      payload: PracticeSharePayload;
+      submittedWord: string;
+      sharerName?: string;
+      expectedPuzzleFingerprint: string;
+    }
+  | {
       kind: "result";
       payload: PracticeSharePayload;
       submittedWord: string;

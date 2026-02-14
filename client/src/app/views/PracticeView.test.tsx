@@ -10,6 +10,7 @@ import {
   DEFAULT_USER_SETTINGS,
   UserSettingsContext
 } from "../../userSettings";
+import type { PracticeChallengeComparison } from "../practice/practiceUtils";
 import { PracticeView } from "./PracticeView";
 
 const basePracticeState: PracticeModeState = {
@@ -47,6 +48,8 @@ const completedResult: PracticeResult = {
 function renderPracticeView(options: {
   inputMethod: "typing" | "tile";
   phase?: PracticeModeState["phase"];
+  initialShareChoiceOpen?: boolean;
+  practiceChallengeComparison?: PracticeChallengeComparison | null;
 }) {
   const practiceState: PracticeModeState = {
     ...basePracticeState,
@@ -67,8 +70,11 @@ function renderPracticeView(options: {
         practiceResult={practiceState.result}
         practiceShareStatus={null}
         practiceResultShareStatus={null}
+        practiceChallengeShareStatus={null}
+        practiceChallengeComparison={options.practiceChallengeComparison ?? null}
         onSharePracticePuzzle={() => {}}
         onSharePracticeResult={() => {}}
+        onSharePracticeChallenge={() => {}}
         onOpenPracticeDifficultyPicker={() => {}}
         onPracticeNext={() => {}}
         onPracticeExit={() => {}}
@@ -87,6 +93,7 @@ function renderPracticeView(options: {
         hiddenPracticeOptionCount={0}
         showAllPracticeOptions={false}
         setShowAllPracticeOptions={() => {}}
+        initialShareChoiceOpen={options.initialShareChoiceOpen}
       />
     </UserSettingsContext.Provider>
   );
@@ -111,4 +118,42 @@ test("PracticeView does not render selectable tiles during result phase", () => 
   const html = renderPracticeView({ inputMethod: "tile", phase: "result" });
   assert.doesNotMatch(html, /tile-selectable/);
   assert.doesNotMatch(html, />Undo</);
+});
+
+test("PracticeView renders challenge comparison details in result phase", () => {
+  const html = renderPracticeView({
+    inputMethod: "typing",
+    phase: "result",
+    practiceChallengeComparison: {
+      sharerLabel: "Paul",
+      sharerWord: "TEAMS",
+      sharerScore: 5,
+      recipientWord: "TEAM",
+      recipientScore: 4,
+      scoreDelta: -1
+    }
+  });
+  assert.match(html, /Challenge/);
+  assert.match(html, /Paul/);
+  assert.match(html, /TEAMS \(5\/4\)/);
+  assert.match(html, /DEFEAT!/);
+  assert.doesNotMatch(html, /<strong>You<\/strong>:/);
+});
+
+test("PracticeView renders challenge share action in share modal", () => {
+  const html = renderPracticeView({
+    inputMethod: "typing",
+    phase: "result",
+    initialShareChoiceOpen: true
+  });
+  assert.match(html, /Send challenge/);
+});
+
+test("PracticeView disables challenge share action when no valid result is available", () => {
+  const html = renderPracticeView({
+    inputMethod: "typing",
+    phase: "puzzle",
+    initialShareChoiceOpen: true
+  });
+  assert.match(html, /<button[^>]*disabled[^>]*>\s*Send challenge\s*<\/button>/);
 });

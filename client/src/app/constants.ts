@@ -7,6 +7,7 @@ export const SESSION_TOKEN_STORAGE_KEY = "anagram.sessionToken";
 export const PLAYER_NAME_STORAGE_KEY = "anagram.playerName";
 export const PRACTICE_SHARE_QUERY_PARAM = "practice";
 export const PRACTICE_RESULT_SHARE_QUERY_PARAM = "practiceResult";
+export const PRACTICE_CHALLENGE_QUERY_PARAM = "practiceChallenge";
 export const PRIVATE_ROOM_QUERY_PARAM = "room";
 export const PRIVATE_ROOM_CODE_QUERY_PARAM = "code";
 export const LETTER_PATTERN = /^[A-Z]+$/;

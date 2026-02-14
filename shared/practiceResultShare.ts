@@ -13,6 +13,7 @@ import { normalizeWord } from "./wordValidation.js";
 
 const PRACTICE_RESULT_SHARE_VERSION = 1;
 const PRACTICE_RESULT_SHARE_PART_SEPARATOR = ".";
+const ENCODED_ANSWER_PREFIX = "~";
 const LETTER_PATTERN = /^[A-Z]+$/;
 const BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const BASE64URL_LOOKUP = new Map(
@@ -102,6 +103,23 @@ function normalizeResultAnswer(value: string): string {
   return normalizeWord(value);
 }
 
+function encodeResultAnswer(value: string): string {
+  return `${ENCODED_ANSWER_PREFIX}${encodeDisplayName(value)}`;
+}
+
+function decodeResultAnswer(value: string): string | null {
+  if (value.startsWith(ENCODED_ANSWER_PREFIX)) {
+    const decoded = decodeDisplayName(value.slice(ENCODED_ANSWER_PREFIX.length));
+    if (decoded === null) return null;
+    const normalizedDecoded = normalizeResultAnswer(decoded);
+    return isValidAnswer(normalizedDecoded) ? normalizedDecoded : null;
+  }
+
+  // Backward compatibility for legacy plain-text answer tokens.
+  const normalizedLegacy = normalizeResultAnswer(value);
+  return isValidAnswer(normalizedLegacy) ? normalizedLegacy : null;
+}
+
 function normalizeSharerName(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -144,7 +162,7 @@ export function encodePracticeResultSharePayload(payload: PracticeResultSharePay
   const parts = [
     String(PRACTICE_RESULT_SHARE_VERSION),
     encodePracticeSharePayload(payload.p),
-    payload.a
+    encodeResultAnswer(payload.a)
   ];
   if (payload.n !== undefined) {
     parts.push(encodeDisplayName(payload.n));
@@ -164,8 +182,8 @@ export function decodePracticeResultSharePayload(token: string): PracticeResultS
   const puzzlePayload = decodePracticeSharePayload(parts[1]);
   if (!puzzlePayload) return null;
 
-  const normalizedAnswer = normalizeResultAnswer(parts[2]);
-  if (!isValidAnswer(normalizedAnswer)) return null;
+  const normalizedAnswer = decodeResultAnswer(parts[2]);
+  if (!normalizedAnswer) return null;
 
   const decodedName = parts.length === 4 ? decodeDisplayName(parts[3]) : undefined;
   if (parts.length === 4 && decodedName === null) return null;

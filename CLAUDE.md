@@ -41,7 +41,7 @@ NODE_ENV=test node --test --loader tsx shared/replayFile.test.ts
 **Game modes:**
 - Multiplayer rooms with lobbies, spectators, and private invite links
 - Pre-steal mode (strategic pre-programming of claims)
-- Practice mode with 5 difficulty levels (`server/src/practice.ts`)
+- Puzzle mode with 5 difficulty levels (`server/src/practice.ts`)
 - Game replay recording, analysis, and JSON import/export
 
 **State persistence:** Optional Upstash Redis integration for persisting multiplayer state across server restarts (env vars: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`).

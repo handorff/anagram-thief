@@ -74,7 +74,7 @@ export function LobbyListView({
       </section>
 
       <section className="panel">
-        <h2>Practice Mode</h2>
+        <h2>Puzzle Mode</h2>
         <p className="muted">
           Train solo on one puzzle at a time. Submit your best play, then review every possible claim
           and score.
@@ -85,7 +85,7 @@ export function LobbyListView({
           </div>
         )}
         <div className="button-row">
-          <button onClick={onStartPractice}>Start practice</button>
+          <button onClick={onStartPractice}>Start puzzle mode</button>
           <button className="button-secondary" onClick={onOpenPracticeEditor}>
             Create custom puzzle
           </button>

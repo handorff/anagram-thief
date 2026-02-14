@@ -883,6 +883,49 @@ label.row {
   margin: 0;
 }
 
+.practice-result-challenge {
+  margin-top: 0.35rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.practice-result-challenge p {
+  margin: 0;
+}
+
+.practice-result-challenge-outcome {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.62rem;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.practice-result-challenge-outcome-win {
+  background: var(--color-result-perfect-bg);
+  border-color: var(--color-result-perfect-border);
+  color: var(--color-result-perfect-text);
+}
+
+.practice-result-challenge-outcome-lose {
+  background: var(--color-result-fail-bg);
+  border-color: var(--color-result-fail-border);
+  color: var(--color-result-fail-text);
+}
+
+.practice-result-challenge-outcome-tie {
+  background: var(--color-result-ok-bg);
+  border-color: var(--color-result-ok-border);
+  color: var(--color-result-ok-text);
+}
+
 .practice-result-summary-header {
   display: flex;
   justify-content: space-between;

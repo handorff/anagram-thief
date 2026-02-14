@@ -78,6 +78,46 @@ test("readPendingSharedLaunchFromUrl parses result token", () => {
   });
 });
 
+test("readPendingSharedLaunchFromUrl parses challenge token", () => {
+  const token = encodePracticeResultSharePayload({
+    v: 1,
+    p: { v: 2, d: 4, c: "TEAM", w: ["RATE"] },
+    a: "MEAT",
+    n: "Paul"
+  });
+  withWindowSearch(`?practiceChallenge=${encodeURIComponent(token)}`, () => {
+    const launch = readPendingSharedLaunchFromUrl();
+    assert.equal(launch?.kind, "challenge");
+    assert.equal(launch?.submittedWord, "MEAT");
+    assert.equal(launch?.payload.c, "TEAM");
+  });
+});
+
+test("readPendingSharedLaunchFromUrl prefers challenge over result and puzzle", () => {
+  const challengeToken = encodePracticeResultSharePayload({
+    v: 1,
+    p: { v: 2, d: 3, c: "TEAM", w: [] },
+    a: "MEAT",
+    n: "Challenger"
+  });
+  const resultToken = encodePracticeResultSharePayload({
+    v: 1,
+    p: { v: 2, d: 2, c: "RATE", w: [] },
+    a: "TEAR",
+    n: "Sharer"
+  });
+  const puzzleToken = encodePracticeSharePayload({ v: 2, d: 1, c: "ABCD", w: ["FACE"] });
+  withWindowSearch(
+    `?practice=${encodeURIComponent(puzzleToken)}&practiceResult=${encodeURIComponent(resultToken)}&practiceChallenge=${encodeURIComponent(challengeToken)}`,
+    () => {
+      const launch = readPendingSharedLaunchFromUrl();
+      assert.equal(launch?.kind, "challenge");
+      assert.equal(launch?.payload.c, "TEAM");
+      assert.equal(launch?.submittedWord, "MEAT");
+    }
+  );
+});
+
 test("private room helpers parse and remove query params", () => {
   withWindowSearch("?room=abc123&code=4567", () => {
     const pending = readPendingPrivateRoomJoinFromUrl();
@@ -88,7 +128,7 @@ test("private room helpers parse and remove query params", () => {
 });
 
 test("removePracticeShareFromUrl strips practice params", () => {
-  withWindowSearch("?practice=abc&practiceResult=def", () => {
+  withWindowSearch("?practice=abc&practiceResult=def&practiceChallenge=ghi", () => {
     removePracticeShareFromUrl();
     assert.equal((window as { location: { search: string } }).location.search, "");
   });

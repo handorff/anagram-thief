@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildPracticeChallengeComparison,
   clampClaimTimerSeconds,
   clampFlipTimerSeconds,
   clampPracticeDifficulty,
   clampPracticeTimerSeconds,
   formatPracticeOptionLabel,
+  getPracticeScoreForWord,
   getPracticeResultCategory,
   getReplayPracticeOptionClassName,
   normalizeEditorText
@@ -60,4 +62,68 @@ test("getReplayPracticeOptionClassName highlights claimed words", () => {
   };
   assert.equal(getReplayPracticeOptionClassName(option, new Set(["TEAMS"])), "practice-option replay-claimed");
   assert.equal(getReplayPracticeOptionClassName(option, new Set(["OTHER"])), "practice-option");
+});
+
+test("getPracticeScoreForWord resolves score from options and falls back to zero", () => {
+  const result = {
+    submittedWordNormalized: "TEAM",
+    score: 4,
+    bestScore: 6,
+    timedOut: false,
+    allOptions: [
+      {
+        word: "TEAMS",
+        score: 5,
+        baseScore: 5,
+        stolenLetters: 0,
+        source: "center" as const
+      }
+    ]
+  };
+  assert.equal(getPracticeScoreForWord(result, "TEAMS"), 5);
+  assert.equal(getPracticeScoreForWord(result, "team"), 4);
+  assert.equal(getPracticeScoreForWord(result, "OTHER"), 0);
+});
+
+test("buildPracticeChallengeComparison returns deterministic challenge summary", () => {
+  const result = {
+    submittedWordNormalized: "TEAM",
+    score: 4,
+    bestScore: 6,
+    timedOut: false,
+    allOptions: [
+      {
+        word: "TEAMS",
+        score: 5,
+        baseScore: 5,
+        stolenLetters: 0,
+        source: "center" as const
+      }
+    ]
+  };
+
+  const comparison = buildPracticeChallengeComparison(result, "teams", "Paul");
+  assert.deepEqual(comparison, {
+    sharerLabel: "Paul",
+    sharerWord: "TEAMS",
+    sharerScore: 5,
+    recipientWord: "TEAM",
+    recipientScore: 4,
+    scoreDelta: -1
+  });
+});
+
+test("buildPracticeChallengeComparison defaults missing sharer score to zero and name to Challenger", () => {
+  const result = {
+    submittedWordNormalized: "TEAM",
+    score: 4,
+    bestScore: 6,
+    timedOut: false,
+    allOptions: []
+  };
+
+  const comparison = buildPracticeChallengeComparison(result, "OTHER");
+  assert.equal(comparison.sharerLabel, "Challenger");
+  assert.equal(comparison.sharerScore, 0);
+  assert.equal(comparison.scoreDelta, 4);
 });

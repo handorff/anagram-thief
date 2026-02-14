@@ -12,6 +12,7 @@ import type {
 } from "@shared/types";
 import { useUserSettings } from "../../userSettings";
 import {
+  type PracticeChallengeComparison,
   formatPracticeOptionLabel,
   getPracticeOptionClassName
 } from "../practice/practiceUtils";
@@ -27,8 +28,11 @@ type Props = {
   practiceResult: PracticeResult | null;
   practiceShareStatus: "copied" | "failed" | null;
   practiceResultShareStatus: "copied" | "failed" | null;
+  practiceChallengeShareStatus: "copied" | "failed" | null;
+  practiceChallengeComparison: PracticeChallengeComparison | null;
   onSharePracticePuzzle: () => void;
   onSharePracticeResult: () => void;
+  onSharePracticeChallenge: () => void;
   onOpenPracticeDifficultyPicker: () => void;
   onPracticeNext: () => void;
   onPracticeExit: () => void;
@@ -47,6 +51,7 @@ type Props = {
   hiddenPracticeOptionCount: number;
   showAllPracticeOptions: boolean;
   setShowAllPracticeOptions: Dispatch<SetStateAction<boolean>>;
+  initialShareChoiceOpen?: boolean;
 };
 
 export function PracticeView({
@@ -55,8 +60,11 @@ export function PracticeView({
   practiceResult,
   practiceShareStatus,
   practiceResultShareStatus,
+  practiceChallengeShareStatus,
+  practiceChallengeComparison,
   onSharePracticePuzzle,
   onSharePracticeResult,
+  onSharePracticeChallenge,
   onOpenPracticeDifficultyPicker,
   onPracticeNext,
   onPracticeExit,
@@ -74,9 +82,10 @@ export function PracticeView({
   visiblePracticeOptions,
   hiddenPracticeOptionCount,
   showAllPracticeOptions,
-  setShowAllPracticeOptions
+  setShowAllPracticeOptions,
+  initialShareChoiceOpen = false
 }: Props) {
-  const [isShareChoiceOpen, setIsShareChoiceOpen] = useState(false);
+  const [isShareChoiceOpen, setIsShareChoiceOpen] = useState(initialShareChoiceOpen);
   const { isTileInputMethodEnabled } = useUserSettings();
   const isResultPhase = practiceState.phase === "result";
   const isTileSelectionEnabled = isTileInputMethodEnabled && practiceState.phase === "puzzle";
@@ -89,6 +98,14 @@ export function PracticeView({
       !practiceResult.timedOut &&
       practiceResult.submittedWordNormalized
   );
+  const challengeOutcome =
+    practiceChallengeComparison === null
+      ? null
+      : practiceChallengeComparison.scoreDelta > 0
+        ? { key: "win", text: "VICTORY!" }
+        : practiceChallengeComparison.scoreDelta < 0
+          ? { key: "lose", text: "DEFEAT!" }
+          : { key: "tie", text: "DEAD HEAT!" };
 
   const handlePracticeTileSelect = (letter: string) => {
     if (!isTileSelectionEnabled) return;
@@ -124,7 +141,7 @@ export function PracticeView({
       <section className="panel practice-board">
         <div className="practice-header">
           <div className="practice-header-summary">
-            <h2>Practice Mode</h2>
+            <h2>Puzzle Mode</h2>
           </div>
           <div className="practice-header-actions">
             {practicePuzzle && (
@@ -156,8 +173,8 @@ export function PracticeView({
               className="icon-button practice-exit-icon-button"
               type="button"
               onClick={onPracticeExit}
-              aria-label="Exit practice"
-              title="Exit practice"
+              aria-label="Exit puzzle mode"
+              title="Exit puzzle mode"
             >
               <span aria-hidden="true">✕</span>
             </button>
@@ -359,6 +376,23 @@ export function PracticeView({
                       </strong>{" "}
                       ({practiceResult.score}/{practiceResult.bestScore})
                     </p>
+                    {practiceChallengeComparison && (
+                      <div className="practice-result-challenge">
+                        <p className="muted">Challenge</p>
+                        <p>
+                          <strong>{practiceChallengeComparison.sharerLabel}</strong>:{" "}
+                          {practiceChallengeComparison.sharerWord} ({practiceChallengeComparison.sharerScore}/
+                          {practiceResult.bestScore})
+                        </p>
+                        <p>
+                          <span
+                            className={`practice-result-challenge-outcome practice-result-challenge-outcome-${challengeOutcome?.key}`}
+                          >
+                            {challengeOutcome?.text}
+                          </span>
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="practice-options">
@@ -436,6 +470,22 @@ export function PracticeView({
                   : practiceResultShareStatus === "failed"
                     ? "Result copy failed"
                     : "Share result"}
+              </button>
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={!canShareResult}
+                onClick={() => {
+                  if (!canShareResult) return;
+                  setIsShareChoiceOpen(false);
+                  onSharePracticeChallenge();
+                }}
+              >
+                {practiceChallengeShareStatus === "copied"
+                  ? "Challenge copied!"
+                  : practiceChallengeShareStatus === "failed"
+                    ? "Challenge copy failed"
+                    : "Send challenge"}
               </button>
             </div>
             {!canShareResult && (
