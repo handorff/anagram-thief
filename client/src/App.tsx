@@ -172,6 +172,7 @@ export default function App() {
   const [gameLogEntries, setGameLogEntries] = useState<GameLogEntry[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatDraft, setChatDraft] = useState("");
+  const [hasUnreadChatMessages, setHasUnreadChatMessages] = useState(false);
   const [claimedWordHighlights, setClaimedWordHighlights] = useState<Record<string, WordHighlightKind>>({});
 
   const [playerName, setPlayerName] = useState(() => readStoredPlayerName());
@@ -220,6 +221,9 @@ export default function App() {
   const replayImportInputRef = useRef<HTMLInputElement>(null);
   const gameLogListRef = useRef<HTMLDivElement>(null);
   const chatListRef = useRef<HTMLDivElement>(null);
+  const isBottomPanelChatModeRef = useRef(
+    userSettings.chatEnabled && userSettings.bottomPanelMode === "chat"
+  );
   const previousGameStateRef = useRef<GameState | null>(null);
   const lastClaimFailureRef = useRef<ClaimFailureContext | null>(null);
   const roomStatusRef = useRef<RoomState["status"] | null>(null);
@@ -338,10 +342,12 @@ export default function App() {
     const onChatHistory = (messages: ChatMessage[]) => {
       if (!userSettings.chatEnabled) {
         setChatMessages([]);
+        setHasUnreadChatMessages(false);
         return;
       }
       if (!Array.isArray(messages)) {
         setChatMessages([]);
+        setHasUnreadChatMessages(false);
         return;
       }
       if (messages.length <= MAX_CHAT_ENTRIES) {
@@ -358,6 +364,9 @@ export default function App() {
         if (next.length <= MAX_CHAT_ENTRIES) return next;
         return next.slice(next.length - MAX_CHAT_ENTRIES);
       });
+      if (!isBottomPanelChatModeRef.current) {
+        setHasUnreadChatMessages(true);
+      }
     };
     const onError = ({ message }: { message: string }) => {
       if (practiceModeRef.current.active && practiceModeRef.current.phase === "puzzle") {
@@ -587,6 +596,13 @@ export default function App() {
   const shouldShowGameLog = Boolean(gameState) && roomState?.status === "in-game";
   const isBottomPanelChatEnabled = userSettings.chatEnabled;
   const isBottomPanelChatMode = isBottomPanelChatEnabled && userSettings.bottomPanelMode === "chat";
+  useEffect(() => {
+    isBottomPanelChatModeRef.current = isBottomPanelChatMode;
+  }, [isBottomPanelChatMode]);
+  useEffect(() => {
+    if (!isBottomPanelChatMode) return;
+    setHasUnreadChatMessages(false);
+  }, [isBottomPanelChatMode]);
   const roomReplay = gameState?.replay ?? null;
   const roomReplaySteps = useMemo(
     () =>
@@ -1454,6 +1470,9 @@ export default function App() {
     if (mode === "chat" && !userSettings.chatEnabled) {
       return;
     }
+    if (mode === "chat") {
+      setHasUnreadChatMessages(false);
+    }
     setUserSettings((current) => {
       if (current.bottomPanelMode === mode) {
         return current;
@@ -1660,6 +1679,7 @@ export default function App() {
     if (userSettings.chatEnabled) return;
     setChatMessages([]);
     setChatDraft("");
+    setHasUnreadChatMessages(false);
     if (userSettings.bottomPanelMode !== "log") {
       setUserSettings((current) => {
         if (current.bottomPanelMode === "log") return current;
@@ -1968,6 +1988,7 @@ export default function App() {
       setGameLogEntries([]);
       setChatMessages([]);
       setChatDraft("");
+      setHasUnreadChatMessages(false);
       clearClaimWordHighlights();
       previousGameStateRef.current = null;
       lastClaimFailureRef.current = null;
@@ -2449,8 +2470,18 @@ export default function App() {
                 type="button"
                 className={`game-log-mode-button ${isBottomPanelChatMode ? "active" : ""}`}
                 onClick={() => handleBottomPanelModeChange("chat")}
+                aria-label={
+                  hasUnreadChatMessages && !isBottomPanelChatMode
+                    ? "Chat (unread messages)"
+                    : "Chat"
+                }
               >
-                Chat
+                <span className="game-log-mode-label">
+                  Chat
+                  {hasUnreadChatMessages && !isBottomPanelChatMode && (
+                    <span className="game-log-unread-dot" aria-hidden="true" />
+                  )}
+                </span>
               </button>
             )}
           </div>

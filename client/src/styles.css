@@ -1725,6 +1725,20 @@ label.row {
   white-space: nowrap;
 }
 
+.game-log-mode-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.game-log-unread-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: var(--color-danger);
+  flex: none;
+}
+
 .game-log-mode-button.active {
   background: var(--color-accent);
   color: var(--color-text-on-accent);
